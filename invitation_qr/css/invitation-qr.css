@@ -1,0 +1,231 @@
+/* ══════════════════════════════════════════════════════
+   Invitation QR — shared styles
+   ══════════════════════════════════════════════════════ */
+
+/* ── Guest Verify Page ─────────────────────────────── */
+.inv-verify-wrap {
+  max-width: 480px;
+  margin: 3rem auto;
+  padding: 0 1rem;
+  font-family: system-ui, sans-serif;
+}
+.inv-verify {
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  box-shadow: 0 4px 24px rgba(0,0,0,.1);
+}
+.inv-verify--valid      { background:#f0fff4; border:2px solid #38a169; }
+.inv-verify--checkedin  { background:#ebf8ff; border:2px solid #3182ce; }
+.inv-verify--invalid    { background:#fff5f5; border:2px solid #e53e3e; }
+.inv-verify--empty      { background:#f7fafc; border:2px solid #cbd5e0; }
+.inv-verify__icon       { font-size:3rem; margin-bottom:1rem; }
+.inv-verify__heading    { font-size:1.75rem; font-weight:700; margin-bottom:1.5rem; }
+.inv-verify__details {
+  text-align:left; display:grid; grid-template-columns:auto 1fr;
+  gap:.5rem 1rem; margin-bottom:1.5rem;
+}
+.inv-verify__details dt  { font-weight:600; color:#4a5568; }
+.inv-verify__details dd  { margin:0; color:#1a202c; word-break:break-all; }
+.inv-verify__details code{ font-family:monospace; background:#edf2f7; padding:2px 6px; border-radius:4px; }
+.inv-verify__checkin-wrap{ margin-top:1.5rem; }
+.inv-verify__checkin-btn {
+  background:#38a169; color:#fff; border:none; border-radius:8px;
+  padding:.85rem 2.5rem; font-size:1.1rem; font-weight:600;
+  cursor:pointer; transition:background .2s,transform .1s; width:100%;
+}
+.inv-verify__checkin-btn:hover:not(:disabled){ background:#2f855a; transform:translateY(-1px); }
+.inv-verify__checkin-btn:disabled{ background:#9ae6b4; cursor:not-allowed; }
+.inv-verify__already { color:#2b6cb0; font-weight:600; margin:0; }
+
+/* ── Events listing ────────────────────────────────── */
+.iqr-filter-bar  { margin-bottom:1.5rem; }
+.iqr-filter-form { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
+.iqr-filter-input{
+  padding:.45rem .75rem; border:1px solid #cbd5e0; border-radius:6px;
+  font-size:1rem; min-width:260px;
+}
+.iqr-events-table td,
+.iqr-events-table th { vertical-align:middle; }
+
+/* ── Submissions list ──────────────────────────────── */
+.invitation-qr-actions {
+  display:flex; gap:.75rem; margin-bottom:1.5rem; flex-wrap:wrap; align-items:center;
+}
+.invitation-qr-submissions-table th { white-space:nowrap; }
+.invitation-qr-submissions-table td { vertical-align:middle; }
+
+/* ── Progress bar ──────────────────────────────────── */
+.iqr-progress-wrap  { margin-bottom:1.25rem; }
+.iqr-progress-label { font-size:.875rem; color:#4a5568; margin-bottom:.35rem; }
+.iqr-progress-bar   { height:10px; background:#e2e8f0; border-radius:99px; overflow:hidden; }
+.iqr-progress-fill  { height:100%; background:#38a169; border-radius:99px; transition:width .4s; }
+
+/* ── Send status bar ───────────────────────────────── */
+.iqr-send-status {
+  padding:.75rem 1rem; border-radius:6px; margin-bottom:1rem;
+  font-weight:600; font-size:.95rem;
+}
+.iqr-send-status--success { background:#f0fff4; color:#276749; border:1px solid #9ae6b4; }
+.iqr-send-status--error   { background:#fff5f5; color:#9b2c2c; border:1px solid #feb2b2; }
+.iqr-send-status--warning { background:#fffaf0; color:#744210; border:1px solid #fbd38d; }
+
+/* ── Events List & Stats ───────────────────────────────────────────────── */
+.iqr-search-wrap {
+  margin-bottom: 1.5rem;
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.iqr-search-input {
+  padding: .5rem .75rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  font-size: .95rem;
+  min-width: 260px;
+}
+.iqr-search-wrap form {
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.iqr-back-link {
+  display: inline-block;
+  margin-bottom: 1rem;
+  color: #3182ce;
+  text-decoration: none;
+  font-weight: 600;
+}
+.iqr-back-link:hover { text-decoration: underline; }
+
+.iqr-stats-bar {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+.iqr-stat-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: .75rem 1.25rem;
+  border-radius: 10px;
+  min-width: 90px;
+  line-height: 1.3;
+}
+.iqr-stat-chip strong { font-size: 1.6rem; font-weight: 700; }
+.iqr-stat-chip span   { font-size: .75rem; opacity: .85; }
+.iqr-stat-chip--gray   { background: #edf2f7; color: #2d3748; }
+.iqr-stat-chip--green  { background: #f0fff4; color: #276749; }
+.iqr-stat-chip--orange { background: #fffaf0; color: #7b341e; }
+.iqr-stat-chip--blue   { background: #ebf8ff; color: #2a4365; }
+
+/* ── Actions toolbar ───────────────────────────────────────────────────── */
+.iqr-actions {
+  display: flex;
+  gap: .75rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Table status badges ───────────────────────────────────────────────── */
+.iqr-ready   { color: #276749; font-weight: 600; }
+.iqr-pending { color: #744210; font-weight: 500; }
+.iqr-sent    { color: #2a4365; font-weight: 600; }
+
+.iqr-submissions-table td { vertical-align: middle; }
+.iqr-events-table td      { vertical-align: middle; }
+
+/* ── Bulk actions bar ──────────────────────────────────────────────────── */
+.iqr-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .75rem 1rem;
+  background: #ebf8ff;
+  border: 1px solid #bee3f8;
+  border-radius: 8px;
+  margin-top: .75rem;
+  flex-wrap: wrap;
+}
+.iqr-bulk-bar span { font-weight: 600; color: #2a4365; }
+.iqr-bulk-bar button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Ad-hoc form ───────────────────────────────────────────────────────── */
+.iqr-adhoc-wrap { margin-bottom: 1.5rem; }
+.iqr-adhoc-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: flex-end;
+  padding: 1rem 0 .5rem;
+}
+.iqr-adhoc-form label {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  font-size: .875rem;
+  font-weight: 600;
+  color: #4a5568;
+}
+
+/* ── Checkbox column ───────────────────────────────────────────────────── */
+.iqr-select-cb, #iqr-select-all {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #3182ce;
+}
+.iqr-submissions-table th:first-child,
+.iqr-submissions-table td:first-child { width: 32px; text-align: center; }
+
+/* ── Resend button variant ─────────────────────────────────────────────── */
+.button--resend {
+  background: #ed8936;
+  color: #fff;
+  border-color: #dd6b20;
+}
+.button--resend:hover { background: #dd6b20; }
+
+/* ── RSVP badges ───────────────────────────────────────────────────────── */
+.iqr-rsvp-yes { color: #276749; font-weight: 700; }
+.iqr-rsvp-no  { color: #9b2c2c; font-weight: 700; }
+
+/* ── Access card additions ──────────────────────────────────────────────── */
+.iqr-stat-chip--purple { border-left: 4px solid #7c3aed; }
+.iqr-stat-chip--purple strong { color: #7c3aed; }
+
+.button--access {
+  background-color: #7c3aed;
+  color: #fff;
+  border-color: #6d28d9;
+}
+.button--access:hover {
+  background-color: #6d28d9;
+}
+
+.iqr-event-meta {
+  background: #f0f4ff;
+  border-left: 4px solid #3b82f6;
+  padding: 0.6rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  border-radius: 3px;
+}
+
+/* ── Template Manager ───────────────────────────────────────────────────── */
+.iqr-template-form { max-width: 700px; }
+.iqr-form-row { margin-bottom: 1.2rem; }
+.iqr-form-row label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
+.iqr-form-row small { display: block; color: #666; margin-top: 0.25rem; font-size: 0.82rem; }
+.iqr-var-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+.iqr-var-table th, .iqr-var-table td { padding: 0.5rem 0.75rem; border: 1px solid #ddd; text-align: left; }
+.iqr-var-table th { background: #f5f5f5; font-weight: 600; }
+.iqr-var-select { width: 100%; padding: 0.3rem; border: 1px solid #ccc; border-radius: 3px; }
+.iqr-form-actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
+.iqr-help { color: #555; font-size: 0.9rem; margin-top: 1rem; }
+.button--danger { background: #dc2626; color: #fff; border-color: #b91c1c; margin-left: 0.5rem; }
+.button--danger:hover { background: #b91c1c; }
+.iqr-templates-table code { font-size: 0.78rem; background: #f3f4f6; padding: 2px 5px; border-radius: 3px; }

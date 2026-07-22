@@ -1,0 +1,15 @@
+# Invitation QR Module Permissions
+
+administer invitation qr:
+  title: 'Administer Invitation QR'
+  description: 'Full access to module settings, Twilio configuration, template manager, bulk send actions, re-generate QRs and re-stamp cards.'
+  restrict access: TRUE
+
+access invitation qr submissions:
+  title: 'Access Invitation QR submissions'
+  description: 'View guest submissions list, filter, search, download CSV, RSVP dashboard, and send individual invitation/access cards.'
+
+checkin guests:
+  title: 'Check in guests'
+  description: 'Scan QR codes, mark guests as checked in, and view full guest Personally Identifiable Information PII (name, phone, email) at the event entrance.'
+  restrict access: TRUE

@@ -1,0 +1,10 @@
+name: 'Invitation QR'
+type: module
+description: 'Generates QR codes per guest webform submission, stamps them onto invitation cards, and provides bulk download. Queue-based for scalability.'
+package: Custom
+core_version_requirement: ^10
+dependencies:
+  - drupal:webform
+  - drupal:file
+  - drupal:node
+  - drupal:views

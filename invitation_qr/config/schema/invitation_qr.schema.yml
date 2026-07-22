@@ -1,0 +1,127 @@
+invitation_qr.settings:
+  type: config_object
+  label: 'Invitation QR Settings'
+  mapping:
+    webform_id:
+      type: string
+      label: 'Webform ID'
+    node_type:
+      type: string
+      label: 'Invitation Content Type'
+    invitation_card_field:
+      type: string
+      label: 'Invitation Card Image Field on Node'
+    access_card_field:
+      type: string
+      label: 'Access Card Image Field on Node'
+    qr_position:
+      type: string
+      label: 'QR Stamp Position (on access card)'
+    qr_size:
+      type: integer
+      label: 'QR Code Size in pixels'
+    qr_margin:
+      type: integer
+      label: 'QR Stamp Margin from edges in pixels'
+    process_realtime:
+      type: boolean
+      label: 'Process QR immediately on submission'
+    name_enabled:
+      type: boolean
+      label: 'Overlay guest name on invitation card'
+    name_font_path:
+      type: string
+      label: 'Absolute path to TTF font file'
+    name_font_size:
+      type: integer
+      label: 'Name font size in points'
+    name_color_r:
+      type: integer
+      label: 'Name text color R'
+    name_color_g:
+      type: integer
+      label: 'Name text color G'
+    name_color_b:
+      type: integer
+      label: 'Name text color B'
+    name_position:
+      type: string
+      label: 'Name position preset'
+    name_offset_x:
+      type: integer
+      label: 'Name X offset pixels'
+    name_offset_y:
+      type: integer
+      label: 'Name Y offset pixels'
+    twilio_enabled:
+      type: boolean
+      label: 'Enable Twilio sending'
+    twilio_account_sid:
+      type: string
+      label: 'Twilio Account SID'
+    twilio_auth_token:
+      type: string
+      label: 'Twilio Auth Token'
+    twilio_from:
+      type: string
+      label: 'Twilio From number'
+    twilio_channel:
+      type: string
+      label: 'sms or whatsapp'
+    twilio_message:
+      type: string
+      label: 'Legacy message template (fallback)'
+    twilio_message_wedding:
+      type: string
+      label: 'Wedding event invitation message template'
+    twilio_message_generic:
+      type: string
+      label: 'Generic event invitation message template'
+    access_card_message:
+      type: string
+      label: 'Access card send message'
+    checkin_role:
+      type: string
+      label: 'Role allowed to check in guests'
+    twilio_sent:
+      type: boolean
+      label: 'Track Twilio sent status on submission'
+    rsvp_enabled:
+      type: boolean
+      label: 'Enable RSVP via WhatsApp/SMS'
+    rsvp_yes_keywords:
+      type: string
+      label: 'Comma-separated keywords for YES'
+    rsvp_no_keywords:
+      type: string
+      label: 'Comma-separated keywords for NO'
+    rsvp_reply_yes:
+      type: string
+      label: 'Auto-reply message for YES'
+    rsvp_reply_no:
+      type: string
+      label: 'Auto-reply message for NO'
+    rsvp_reply_unknown:
+      type: string
+      label: 'Auto-reply when message not recognized'
+    rsvp_reminder_message:
+      type: string
+      label: 'RSVP reminder message template'
+    zoom_link_field:
+      type: string
+      label: 'Zoom Link Field machine name on node'
+    default_invitation_template:
+      type: string
+      label: 'Default template ID for invitation card sends'
+    default_access_template:
+      type: string
+      label: 'Default template ID for access card sends'
+    twilio_templates:
+      type: string
+      label: 'Twilio Content Templates (JSON)'
+    twilio_messaging_service_sid:
+      type: string
+      label: 'Twilio Messaging Service SID (MG...)'
+    twilio_webhook_secret:
+      type: string
+      label: 'Twilio Auth Token for webhook validation'

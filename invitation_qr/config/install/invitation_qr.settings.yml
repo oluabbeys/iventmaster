@@ -1,0 +1,40 @@
+webform_id: invitation_webform
+node_type: invitation
+invitation_card_field: field_invitation_card
+access_card_field: field_access_card
+qr_position: bottom-right
+qr_size: 150
+qr_margin: 20
+process_realtime: false
+name_enabled: true
+name_font_path: ''
+name_font_size: 36
+name_color_r: 255
+name_color_g: 255
+name_color_b: 255
+name_position: center
+name_offset_x: 0
+name_offset_y: 0
+twilio_enabled: false
+twilio_account_sid: ''
+twilio_auth_token: ''
+twilio_from: ''
+twilio_channel: whatsapp
+twilio_message: 'Hello @name, your invitation is ready. Please reply YES to confirm or NO to decline.'
+twilio_message_wedding: "Dear {{Guest name}},\n\nThe {{BRIDE FATHER NAME}} and {{Groom mother name}} families would like to invite you to the traditional wedding of {{Bride NAME}} and {{Groom name}}\n\n📅 *Date:* {{Event Date}}\n📍 *Venue:* {{Event Name}}\n⏰ *Time:* {{Event Time}}\n🔗 *Zoom:* {{Zoom Link}}\n\nWe look forward to celebrating with you! 🎊"
+twilio_message_generic: "Dear {{Guest name}},\n\nYou are cordially invited to *{{Event Name}}*.\n\n📅 *Date:* {{Event Date}}\n📍 *Venue:* {{Event Venue}}\n⏰ *Time:* {{Event Time}}\n🔗 *Zoom:* {{Zoom Link}}\n\nWe look forward to seeing you! 🎊"
+access_card_message: "Dear {{Guest name}}, please find your access card attached. Present this at the event entrance. 🎟️"
+checkin_role: checkin
+rsvp_enabled: false
+rsvp_yes_keywords: 'yes,yeah,yep,coming,confirm,attending,i will,i am coming'
+rsvp_no_keywords: 'no,nope,nah,cannot,cant,cancel,not coming,decline,sorry'
+rsvp_reply_yes: 'Thank you @name! We are excited to see you at the event. See you there!'
+rsvp_reply_no: 'Thank you for letting us know @name. We will miss you. Hope to see you next time!'
+rsvp_reply_unknown: 'Hi @name! Please reply YES to confirm attendance or NO to decline.'
+rsvp_reminder_message: 'Hi @name, this is a reminder to RSVP for the event. Reply YES to confirm or NO to decline.'
+twilio_webhook_secret: ''
+default_invitation_template: ''
+default_access_template: ''
+twilio_templates: '{"wedding_invitation":{"id":"wedding_invitation","label":"Wedding Invitation","sid":"HX11156f0d431adfb8395327b9d8fa8809","variables":{"1":"guest_name","2":"bride_father_name","3":"groom_father_name","4":"bride_name","5":"groom_name","6":"event_date","7":"event_venue","8":"event_time"}}}'
+
+twilio_messaging_service_sid: 'MG398bc30d6886496c58ce1d2bfc6547be'

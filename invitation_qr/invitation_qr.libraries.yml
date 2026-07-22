@@ -1,0 +1,13 @@
+invitation-qr.verify:
+  css:
+    theme:
+      css/invitation-qr.css: {}
+
+invitation-qr.admin:
+  css:
+    theme:
+      css/invitation-qr.css: {}
+  js:
+    js/invitation-qr-admin.js: {}
+  dependencies:
+    - core/drupal

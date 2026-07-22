@@ -1,0 +1,38 @@
+services:
+
+  invitation_qr.qr_service:
+    class: Drupal\invitation_qr\Service\InvitationQrService
+    arguments:
+      - '@file.repository'
+      - '@file_system'
+      - '@entity_type.manager'
+      - '@config.factory'
+      - '@logger.factory'
+      - '@queue'
+
+  invitation_qr.zip_service:
+    class: Drupal\invitation_qr\Service\InvitationZipService
+    arguments:
+      - '@file_system'
+      - '@entity_type.manager'
+      - '@config.factory'
+      - '@logger.factory'
+
+  invitation_qr.commands:
+    class: Drupal\invitation_qr\Commands\InvitationQrCommands
+    arguments:
+      - '@invitation_qr.qr_service'
+    tags:
+      - { name: drush.command }
+
+  # Custom access checker — unconditionally allows the Twilio webhook route.
+  access_check.invitation_qr.webhook:
+    class: Drupal\invitation_qr\Access\TwilioWebhookAccess
+    tags:
+      - { name: access_check, applies_to: _invitation_qr_webhook_access }
+
+  # Event subscriber — bypasses page cache and auth for the webhook route.
+  invitation_qr.twilio_webhook_subscriber:
+    class: Drupal\invitation_qr\EventSubscriber\TwilioWebhookSubscriber
+    tags:
+      - { name: event_subscriber }

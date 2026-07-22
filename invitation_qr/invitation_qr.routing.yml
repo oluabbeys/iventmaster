@@ -1,0 +1,221 @@
+invitation_qr.verify_guest:
+  path: '/verify-guest'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\GuestVerifyController::verify'
+    _title: 'Guest Verification'
+  requirements:
+    _access: 'TRUE'
+
+invitation_qr.admin_settings:
+  path: '/admin/config/invitation-qr/settings'
+  defaults:
+    _form: '\Drupal\invitation_qr\Form\InvitationQrSettingsForm'
+    _title: 'Invitation QR Settings'
+  requirements:
+    _permission: 'administer site configuration'
+
+invitation_qr.all_events:
+  path: '/admin/invitation-qr/events'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::allEvents'
+    _title: 'Invitation Events'
+  requirements:
+    _permission: 'access invitation qr submissions'
+
+invitation_qr.submissions_list:
+  path: '/admin/invitation-qr/submissions/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::list'
+    _title: 'Guest Submissions'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    node: \d+
+
+invitation_qr.process_unstamped:
+  path: '/admin/invitation-qr/process-unstamped/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::processUnstamped'
+    _title: 'Process Unstamped'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.generate_all:
+  path: '/admin/invitation-qr/generate-all/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::generateAll'
+    _title: 'Queue All QR Jobs'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.send_all_twilio:
+  path: '/admin/invitation-qr/send-all-twilio/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendAllTwilio'
+    _title: 'Send All Invitations'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.send_all_access_cards:
+  path: '/admin/invitation-qr/send-all-access/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendAllAccessCards'
+    _title: 'Send All Access Cards'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.send_single_twilio:
+  path: '/admin/invitation-qr/send-twilio/{submission}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendSingleTwilio'
+    _title: 'Send Invitation'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    submission: \d+
+
+invitation_qr.send_single_access_card:
+  path: '/admin/invitation-qr/send-access/{submission}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendSingleAccessCard'
+    _title: 'Send Access Card'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    submission: \d+
+
+invitation_qr.download_zip:
+  path: '/admin/invitation-qr/download-zip/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::downloadZip'
+    _title: 'Download All Invitation Cards'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.download_access_zip:
+  path: '/admin/invitation-qr/download-access-zip/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::downloadAccessZip'
+    _title: 'Download All Access Cards'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.download_single:
+  path: '/admin/invitation-qr/download/{submission}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::downloadSingle'
+    _title: 'Download Invitation Card'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    submission: \d+
+
+invitation_qr.download_access_single:
+  path: '/admin/invitation-qr/download-access/{submission}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::downloadAccessSingle'
+    _title: 'Download Access Card'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    submission: \d+
+
+invitation_qr.send_bulk_twilio:
+  path: '/admin/invitation-qr/send-bulk/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendBulkTwilio'
+    _title: 'Send Selected Invitations'
+  methods: [GET]
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.send_adhoc_twilio:
+  path: '/admin/invitation-qr/send-adhoc/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendAdhocTwilio'
+    _title: 'Send to Custom Number'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.twilio_webhook:
+  path: '/invitation-qr/twilio-webhook'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\TwilioWebhookController::incoming'
+    _title: 'Twilio Webhook'
+  methods: [GET, POST]
+  requirements:
+    _invitation_qr_webhook_access: 'TRUE'
+  options:
+    no_cache: TRUE
+
+invitation_qr.send_rsvp_reminder:
+  path: '/admin/invitation-qr/rsvp-reminder/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::sendRsvpReminder'
+    _title: 'Send RSVP Reminders'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.rsvp_dashboard:
+  path: '/admin/invitation-qr/rsvp/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::rsvpDashboard'
+    _title: 'RSVP Dashboard'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    node: \d+
+
+invitation_qr.templates:
+  path: '/admin/invitation-qr/templates'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\TemplateManagerController::listTemplates'
+    _title: 'Message Templates'
+  requirements:
+    _permission: 'administer site configuration'
+
+invitation_qr.template_add:
+  path: '/admin/invitation-qr/templates/add'
+  defaults:
+    _form: '\Drupal\invitation_qr\Form\TemplateForm'
+    _title: 'Add Template'
+    template_id: ''
+  requirements:
+    _permission: 'administer site configuration'
+
+invitation_qr.template_edit:
+  path: '/admin/invitation-qr/templates/{template_id}/edit'
+  defaults:
+    _form: '\Drupal\invitation_qr\Form\TemplateForm'
+    _title: 'Edit Template'
+  requirements:
+    _permission: 'administer site configuration'
+
+invitation_qr.template_delete:
+  path: '/admin/invitation-qr/templates/{template_id}/delete'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\TemplateManagerController::deleteTemplate'
+    _title: 'Delete Template'
+  requirements:
+    _permission: 'administer site configuration'
+
+invitation_qr.restamp_access_cards:
+  path: '/admin/invitation-qr/restamp-access/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::restampAccessCards'
+    _title: 'Re-stamp Access Cards'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.download_csv:
+  path: '/admin/invitation-qr/submissions/{node}/csv'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::downloadCsv'
+    _title: 'Download Guests CSV'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    node: \d+

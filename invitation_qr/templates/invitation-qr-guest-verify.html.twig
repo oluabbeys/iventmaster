@@ -1,0 +1,122 @@
+{#
+ * Variables:
+ *  - valid, guest {name, email, phone, token, sid, pii_masked}
+ *  - checked_in, checkin_time, can_checkin, token
+ *  - event {title, date, venue, time, zoom_link, type}
+#}
+<div class="inv-verify-wrap">
+  {% if valid and guest %}
+    <div class="inv-verify inv-verify--{{ checked_in ? 'checkedin' : 'valid' }}" id="inv-verify-card">
+
+      <div class="inv-verify__icon">
+        {{ checked_in ? '✅' : '🎟️' }}
+      </div>
+
+      <h1 class="inv-verify__heading">
+        {{ checked_in ? 'Already Checked In'|t : 'Guest Verified'|t }}
+      </h1>
+
+      <dl class="inv-verify__details">
+        <dt>{{ 'Name'|t }}</dt>   <dd id="inv-guest-name">{{ guest.name }}</dd>
+        {% if guest.phone %}
+          <dt>{{ 'Phone'|t }}</dt>  <dd>{{ guest.phone }}</dd>
+        {% endif %}
+        {% if guest.email %}
+          <dt>{{ 'Email'|t }}</dt>  <dd>{{ guest.email }}</dd>
+        {% endif %}
+        <dt>{{ 'Token'|t }}</dt>  <dd><code>{{ guest.token }}</code></dd>
+        {% if checked_in and checkin_time %}
+          <dt>{{ 'Checked in'|t }}</dt>
+          <dd id="inv-checkin-time">{{ checkin_time }}</dd>
+        {% endif %}
+      </dl>
+
+      {% if event %}
+        <div class="inv-verify__event-info">
+          {% if event.title %}
+            <h2 class="inv-verify__event-title">{{ event.title }}</h2>
+          {% endif %}
+          <dl class="inv-verify__event-details">
+            {% if event.date %}
+              <dt>📅 {{ 'Date'|t }}</dt><dd>{{ event.date }}</dd>
+            {% endif %}
+            {% if event.venue %}
+              <dt>📍 {{ 'Venue'|t }}</dt><dd>{{ event.venue }}</dd>
+            {% endif %}
+            {% if event.time %}
+              <dt>⏰ {{ 'Time'|t }}</dt><dd>{{ event.time }}</dd>
+            {% endif %}
+            {% if event.zoom_link %}
+              <dt>🔗 {{ 'Zoom'|t }}</dt>
+              <dd><a href="{{ event.zoom_link }}" target="_blank" rel="noopener">{{ 'Join Online'|t }}</a></dd>
+            {% endif %}
+          </dl>
+        </div>
+      {% endif %}
+
+      {% if can_checkin %}
+        <div class="inv-verify__checkin-wrap" id="inv-checkin-wrap">
+          {% if checked_in %}
+            <p class="inv-verify__already">{{ 'This guest has already been checked in.'|t }}</p>
+          {% else %}
+            <button
+              class="inv-verify__checkin-btn"
+              id="inv-checkin-btn"
+              data-token="{{ guest.token }}"
+              onclick="invCheckin(this)">
+              {{ 'Check In Guest'|t }}
+            </button>
+          {% endif %}
+        </div>
+      {% endif %}
+
+    </div>
+
+  {% elseif token %}
+    <div class="inv-verify inv-verify--invalid">
+      <div class="inv-verify__icon">❌</div>
+      <h1 class="inv-verify__heading">{{ 'Invalid Invitation'|t }}</h1>
+      <p>{{ 'This QR code does not match any registered guest.'|t }}</p>
+    </div>
+
+  {% else %}
+    <div class="inv-verify inv-verify--empty">
+      <h1 class="inv-verify__heading">{{ 'Guest Verification'|t }}</h1>
+      <p>{{ 'Please scan a valid invitation QR code.'|t }}</p>
+    </div>
+  {% endif %}
+</div>
+
+<script>
+function invCheckin(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Checking in…';
+  var token = btn.getAttribute('data-token');
+  fetch('/verify-guest?token=' + token + '&action=checkin', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    var card = document.getElementById('inv-verify-card');
+    var wrap = document.getElementById('inv-checkin-wrap');
+    if (data.success) {
+      card.className = 'inv-verify inv-verify--checkedin';
+      card.querySelector('.inv-verify__icon').textContent = '✅';
+      card.querySelector('.inv-verify__heading').textContent = 'Checked In';
+      var dl = card.querySelector('.inv-verify__details');
+      var dt = document.createElement('dt'); dt.textContent = 'Checked in';
+      var dd = document.createElement('dd'); dd.textContent = data.checkin_time;
+      dl.appendChild(dt); dl.appendChild(dd);
+      wrap.innerHTML = '<p class="inv-verify__already">Check-in recorded.</p>';
+    } else if (data.already) {
+      wrap.innerHTML = '<p class="inv-verify__already">Already checked in.</p>';
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Check In Guest';
+      alert(data.message || 'Check-in failed.');
+    }
+  })
+  .catch(function(){ btn.disabled=false; btn.textContent='Check In Guest'; alert('Network error.'); });
+}
+</script>

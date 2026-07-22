@@ -1,0 +1,19 @@
+invitation_qr.admin_settings:
+  title: 'Invitation QR Settings'
+  description: 'Configure QR stamp position, webform mapping, and queue behaviour.'
+  parent: system.admin_config_content
+  route_name: invitation_qr.admin_settings
+  weight: 10
+
+invitation_qr.all_events:
+  title: 'Invitation Events'
+  description: 'View and manage all invitation events and guest lists.'
+  parent: system.admin_config_content
+  route_name: invitation_qr.all_events
+  weight: 9
+
+invitation_qr.templates:
+  title: 'Message Templates'
+  route_name: invitation_qr.templates
+  parent: invitation_qr.admin_settings
+  weight: 10

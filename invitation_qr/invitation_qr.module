@@ -1,0 +1,115 @@
+<?php
+
+/**
+ * @file
+ * Invitation QR — main module hooks.
+ *
+ * Architecture overview:
+ *  - Webform submissions are NEVER stamped synchronously during the web request
+ *    unless the admin explicitly enables real-time mode (small lists only).
+ *  - Every insert/update pushes a lightweight job onto the Drupal Queue.
+ *  - The QueueWorker (InvitationQrWorker) does the heavy GD stamping off-request.
+ *  - The stamped card file reference is stored ON THE SUBMISSION DATA (key:
+ *    stamped_card_fid) — NOT on the node. The node is only the card template.
+ *  - A submissions list page per-node lets editors see status + download cards.
+ *  - A bulk ZIP download endpoint packages all ready stamped cards.
+ */
+
+use Drupal\webform\WebformSubmissionInterface;
+
+/**
+ * Implements hook_webform_submission_insert().
+ */
+function invitation_qr_webform_submission_insert(WebformSubmissionInterface $submission): void {
+  _invitation_qr_queue_or_process($submission);
+}
+
+/**
+ * Implements hook_webform_submission_update().
+ *
+ * Re-queues if phone number changed (token must be regenerated).
+ */
+function invitation_qr_webform_submission_update(WebformSubmissionInterface $submission): void {
+  $original = $submission->original ?? NULL;
+  if ($original) {
+    $oldPhone = $original->getElementData('phone_number') ?? '';
+    $newPhone = $submission->getElementData('phone_number') ?? '';
+    if ($oldPhone === $newPhone) {
+      return;
+    }
+  }
+  _invitation_qr_queue_or_process($submission);
+}
+
+/**
+ * Pushes a submission onto the queue (or processes immediately in real-time mode).
+ */
+function _invitation_qr_queue_or_process(WebformSubmissionInterface $submission): void {
+  $config    = \Drupal::config('invitation_qr.settings');
+  $targetWid = $config->get('webform_id');
+
+  if ($submission->getWebform()->id() !== $targetWid) {
+    return;
+  }
+
+  /** @var \Drupal\invitation_qr\Service\InvitationQrService $svc */
+  $svc = \Drupal::service('invitation_qr.qr_service');
+
+  if ($config->get('process_realtime')) {
+    // Real-time mode — useful for dev/small lists only.
+    try {
+      $svc->processSubmission($submission);
+    }
+    catch (\Throwable $e) {
+      \Drupal::logger('invitation_qr')->error(
+        'Real-time QR failed for submission @sid: @msg',
+        ['@sid' => $submission->id(), '@msg' => $e->getMessage()]
+      );
+    }
+  }
+  else {
+    // Queue mode — non-blocking, handles any list size.
+    $svc->queueSubmission($submission->id());
+  }
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Drupal cron triggers queue processing automatically.
+ * You can also run: drush queue:run invitation_qr_stamping
+ */
+function invitation_qr_cron(): void {
+  // Queue processing is handled by the QueueWorker plugin automatically.
+  // This hook is intentionally left minimal.
+  // You may add cleanup tasks here (e.g. delete orphaned temp files).
+}
+
+/**
+ * Implements hook_theme().
+ */
+function invitation_qr_theme(): array {
+  return [
+    'invitation_qr_guest_verify' => [
+      'variables' => [
+        'guest'        => NULL,
+        'token'        => NULL,
+        'valid'        => FALSE,
+        'checked_in'   => FALSE,
+        'checkin_time' => NULL,
+        'can_checkin'  => FALSE,
+        'event'        => NULL,
+      ],
+      'template' => 'invitation-qr-guest-verify',
+    ],
+    'invitation_qr_submissions_list' => [
+      'variables' => [
+        'node'        => NULL,
+        'submissions' => [],
+        'generate_url' => NULL,
+        'zip_url'     => NULL,
+      ],
+      'template' => 'invitation-qr-submissions-list',
+    ],
+  ];
+}
