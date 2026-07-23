@@ -168,9 +168,13 @@ class InvitationQrService {
 
         $stampedDir = 'public://invitation-stamped';
         $this->fileSystem->prepareDirectory($stampedDir, FileSystemInterface::CREATE_DIRECTORY);
+        // Include timestamp in filename so re-stamps are never served from
+        // browser or CDN cache — each re-stamp produces a unique file URL.
+        // (Mirrors the same fix already applied to access cards below.)
+        $invFilename = 'stamped-inv-' . $token . '-' . time() . '.png';
         $stampedInvFile = $this->fileRepository->writeData(
           $stampedInvData,
-          $stampedDir . '/stamped-inv-' . $token . '.png',
+          $stampedDir . '/' . $invFilename,
           FileSystemInterface::EXISTS_REPLACE
         );
         $stampedInvFile->setPermanent();
