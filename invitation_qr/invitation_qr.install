@@ -1,0 +1,88 @@
+<?php
+
+/**
+ * @file
+ * Install/update hooks for the Invitation QR module.
+ */
+
+/**
+ * Returns the schema definition for the invitation_qr_replies table.
+ *
+ * Shared by hook_schema() (fresh installs) and hook_update_10001()
+ * (existing sites, via `drush updb`) so both stay in sync.
+ */
+function _invitation_qr_replies_schema(): array {
+  return [
+    'description' => 'Full inbound/outbound WhatsApp message history per guest, so staff can see the whole conversation thread, not just the latest reply.',
+    'fields' => [
+      'id' => [
+        'type'     => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary key.',
+      ],
+      'sid' => [
+        'type'     => 'int',
+        'not null' => TRUE,
+        'description' => 'Webform submission id (guest) this message belongs to.',
+      ],
+      'nid' => [
+        'type'     => 'int',
+        'not null' => FALSE,
+        'description' => 'Node id of the invitation event, for fast per-event lookups.',
+      ],
+      'phone' => [
+        'type'     => 'varchar',
+        'length'   => 32,
+        'not null' => FALSE,
+        'description' => 'E.164 phone number the message was to/from.',
+      ],
+      'direction' => [
+        'type'     => 'varchar',
+        'length'   => 8,
+        'not null' => TRUE,
+        'default'  => 'in',
+        'description' => "'in' = guest reply, 'out' = staff/adhoc message sent to the guest.",
+      ],
+      'message' => [
+        'type'     => 'text',
+        'size'     => 'medium',
+        'not null' => FALSE,
+        'description' => 'The message body.',
+      ],
+      'created' => [
+        'type'     => 'int',
+        'not null' => TRUE,
+        'default'  => 0,
+        'description' => 'Unix timestamp the message was sent/received.',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'sid_created' => ['sid', 'created'],
+      'nid'         => ['nid'],
+    ],
+  ];
+}
+
+/**
+ * Implements hook_schema().
+ */
+function invitation_qr_schema(): array {
+  return [
+    'invitation_qr_replies' => _invitation_qr_replies_schema(),
+  ];
+}
+
+/**
+ * Creates the invitation_qr_replies table on sites that already had the
+ * module installed before per-message history tracking was added — run via
+ * `drush updb` (or Update.php) after deploying this code.
+ */
+function invitation_qr_update_10001(): string {
+  $schema = \Drupal::database()->schema();
+  if (!$schema->tableExists('invitation_qr_replies')) {
+    $schema->createTable('invitation_qr_replies', _invitation_qr_replies_schema());
+    return 'Created invitation_qr_replies table to store full guest message history.';
+  }
+  return 'invitation_qr_replies table already exists — nothing to do.';
+}

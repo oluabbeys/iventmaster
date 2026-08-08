@@ -8,6 +8,7 @@ use Drupal\invitation_qr\Service\InvitationQrService;
 use Drupal\invitation_qr\Service\InvitationZipService;
 use Drupal\Core\Render\Markup;
 use Drupal\node\NodeInterface;
+use Drupal\webform\WebformSubmissionInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -1501,6 +1502,7 @@ class SubmissionsListController extends ControllerBase {
 
     $cardUrl = '';
     $name    = '';
+    $sub     = NULL;
     if ($sid) {
       $sub  = $this->entityTypeManager()->getStorage('webform_submission')->load($sid);
       if ($sub) {
@@ -1516,6 +1518,12 @@ class SubmissionsListController extends ControllerBase {
     // configured invitation/access-card template. Leave blank to keep the
     // old behaviour (template message, optionally with the card attached).
     $ok = $this->qrService->sendViaTwilio($phone, $name, $cardUrl, $config, $message);
+
+    // Record staff's own reply in the conversation history so the thread on
+    // the RSVP Dashboard shows both sides, not just the guest's messages.
+    if ($ok && $sub && trim($message) !== '') {
+      $this->qrService->logReply($sub, 'out', $message, $phone);
+    }
 
     if ($ok) {
       $this->messenger()->addStatus($this->t('Message sent to @phone.', ['@phone' => $phone]));
@@ -1996,21 +2004,33 @@ class SubmissionsListController extends ControllerBase {
         $phone   = $d['phone_number'] ?? '';
         $serial  = ($page * $pageSize) + $i + 1;
 
-        $replyCell = '—';
+        $replyCount = (int) ($d['rsvp_reply_count'] ?? 0);
+
+        $actionLinks = [];
         if ($msgBody !== '' && $phone !== '') {
           $replyUrl = Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
             'query'     => ['reply_phone' => $phone, 'reply_sid' => $sub->id()],
             'fragment'  => 'iqr-adhoc-reply',
           ]);
-          $replyCell = [
-            'data' => [
-              '#type'       => 'link',
-              '#title'      => $this->t('↩ Reply'),
-              '#url'        => $replyUrl,
-              '#attributes' => ['class' => ['button', 'button--small']],
-            ],
+          $actionLinks['reply'] = [
+            '#type'       => 'link',
+            '#title'      => $this->t('↩ Reply'),
+            '#url'        => $replyUrl,
+            '#attributes' => ['class' => ['button', 'button--small']],
           ];
         }
+        // "History" only makes sense once there's more than one message —
+        // with a single reply, the "Last Free-text Message" column already
+        // shows the whole story.
+        if ($replyCount > 1) {
+          $actionLinks['history'] = [
+            '#type'       => 'link',
+            '#title'      => $this->t('🕘 History'),
+            '#url'        => Url::fromRoute('invitation_qr.reply_history', ['node' => $node->id(), 'submission' => $sub->id()]),
+            '#attributes' => ['class' => ['button', 'button--small']],
+          ];
+        }
+        $replyCell = $actionLinks ? ['data' => ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:.4rem;'] ] + $actionLinks] : '—';
 
         $rows[] = [
           $serial,
@@ -2069,6 +2089,103 @@ class SubmissionsListController extends ControllerBase {
     // from an external webhook, outside of any normal cache-tag invalidation.
     $build['#cache'] = ['max-age' => 0];
 
+    return $build;
+  }
+
+  /**
+   * Shows a guest's full message thread — every inbound reply and every
+   * outbound staff/ad-hoc message, oldest first — reached via the "🕘
+   * History" link on the RSVP Dashboard once a guest has replied more than
+   * once (a single reply is already fully visible in the dashboard table).
+   */
+  public function replyHistory(NodeInterface $node, WebformSubmissionInterface $submission): array {
+    $data    = $submission->getData();
+    $name    = $data['name'] ?? '';
+    $phone   = $data['phone_number'] ?? '';
+    $history = $this->qrService->getReplyHistory($submission->id());
+
+    $build = [];
+    $build['back'] = [
+      '#type'       => 'link',
+      '#title'      => $this->t('← Back to RSVP Dashboard'),
+      '#url'        => Url::fromRoute('invitation_qr.rsvp_dashboard', ['node' => $node->id()]),
+      '#attributes' => ['class' => ['iqr-back-link']],
+    ];
+
+    $build['heading'] = [
+      '#type'  => 'html_tag',
+      '#tag'   => 'h3',
+      '#value' => $this->t('Conversation with @name (@phone)', ['@name' => $name ?: $this->t('Unknown'), '@phone' => $phone ?: '—']),
+    ];
+
+    if (empty($history)) {
+      // Sites upgraded from before per-message history existed will have a
+      // reply count > 0 but no logged rows yet — fall back to the single
+      // summary field so this page is never just blank.
+      $lastBody = $data['last_reply_body'] ?? '';
+      $lastTime = $data['last_reply_time'] ?? NULL;
+      if ($lastBody !== '') {
+        $history = [(object) [
+          'direction' => 'in',
+          'message'   => $lastBody,
+          'created'   => $lastTime,
+        ]];
+        $build['note'] = [
+          '#type'  => 'html_tag',
+          '#tag'   => 'p',
+          '#value' => $this->t('Only the most recent message was recorded before per-message history tracking was added — earlier replies from this guest were not kept.'),
+        ];
+      }
+    }
+
+    $items = [];
+    foreach ($history as $row) {
+      $isOut = ($row->direction === 'out');
+      $when  = $row->created ? \Drupal::service('date.formatter')->format((int) $row->created, 'short') : '—';
+      $items[] = [
+        '#type'       => 'html_tag',
+        '#tag'        => 'div',
+        '#attributes' => ['class' => ['iqr-history-msg', $isOut ? 'iqr-history-msg--out' : 'iqr-history-msg--in']],
+        'meta' => [
+          '#type'  => 'html_tag',
+          '#tag'   => 'div',
+          '#attributes' => ['class' => ['iqr-history-meta']],
+          '#value' => ($isOut ? $this->t('Staff · @when', ['@when' => $when]) : $this->t('Guest · @when', ['@when' => $when])),
+        ],
+        'body' => [
+          '#type'  => 'html_tag',
+          '#tag'   => 'div',
+          '#attributes' => ['class' => ['iqr-history-body']],
+          '#value' => Markup::create(nl2br(htmlspecialchars($row->message ?? '', ENT_QUOTES))),
+        ],
+      ];
+    }
+
+    $build['thread'] = [
+      '#type'       => 'container',
+      '#attributes' => ['class' => ['iqr-history-thread']],
+    ] + $items;
+
+    if (empty($items)) {
+      $build['thread']['empty'] = [
+        '#type'  => 'html_tag',
+        '#tag'   => 'p',
+        '#value' => $this->t('No messages recorded for this guest yet.'),
+      ];
+    }
+
+    $build['reply'] = [
+      '#type'       => 'link',
+      '#title'      => $this->t('↩ Reply to @name', ['@name' => $name ?: $phone]),
+      '#url'        => Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
+        'query'    => ['reply_phone' => $phone, 'reply_sid' => $submission->id()],
+        'fragment' => 'iqr-adhoc-reply',
+      ]),
+      '#attributes' => ['class' => ['button', 'button--primary']],
+    ];
+
+    $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
+    $build['#cache'] = ['max-age' => 0];
     return $build;
   }
 

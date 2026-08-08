@@ -126,6 +126,14 @@ class TwilioWebhookController extends ControllerBase {
     $intent = $this->resolveIntent($buttonPayload, $buttonText, $body, $config);
     $this->log("intent=$intent (buttonPayload=$buttonPayload buttonText=$buttonText body=$body)");
 
+    // Log every inbound message (YES/NO taps and free text alike) to the full
+    // conversation history so staff can see everything a guest has said, not
+    // just the single most-recent reply.
+    $historyText = trim($body) !== '' ? $body : trim($buttonText);
+    if ($historyText !== '') {
+      $this->qrService->logReply($submission, 'in', $historyText, $phone);
+    }
+
     // Free-text reply that isn't a recognised YES/NO — save it so staff can see
     // and respond to it from the admin UI (previously this only went to the
     // transient log file and was otherwise invisible in Drupal).

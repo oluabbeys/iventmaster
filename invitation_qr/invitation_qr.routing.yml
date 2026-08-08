@@ -207,6 +207,21 @@ invitation_qr.rsvp_dashboard:
   options:
     no_cache: TRUE
 
+invitation_qr.reply_history:
+  path: '/admin/invitation-qr/rsvp/{node}/history/{submission}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::replyHistory'
+    _title: 'Message History'
+  requirements:
+    _permission: 'access invitation qr submissions'
+    node: \d+
+    submission: \d+
+  options:
+    no_cache: TRUE
+    parameters:
+      submission:
+        type: 'entity:webform_submission'
+
 invitation_qr.templates:
   path: '/admin/invitation-qr/templates'
   defaults:

@@ -1734,6 +1734,52 @@ class InvitationQrService {
     }
   }
 
+  /**
+   * Appends one message to a guest's full conversation history so staff can
+   * see every previous reply, not just the latest one (last_reply_body only
+   * ever holds the single most recent message and gets overwritten each
+   * time). Call this for every inbound guest reply and every outbound
+   * ad-hoc/manual message sent to that guest.
+   */
+  public function logReply(WebformSubmissionInterface $submission, string $direction, string $message, string $phone = ''): void {
+    if (trim($message) === '') {
+      return;
+    }
+    try {
+      $node = $this->findParentNode($submission);
+      \Drupal::database()->insert('invitation_qr_replies')
+        ->fields([
+          'sid'       => $submission->id(),
+          'nid'       => $node ? $node->id() : NULL,
+          'phone'     => $phone ?: (string) ($submission->getData()['phone_number'] ?? ''),
+          'direction' => $direction === 'out' ? 'out' : 'in',
+          'message'   => $message,
+          'created'   => \Drupal::time()->getCurrentTime(),
+        ])
+        ->execute();
+    }
+    catch (\Throwable $e) {
+      // Never let history logging break the actual reply-handling flow.
+      $this->logger->error(
+        'logReply failed for sid=@sid: @msg',
+        ['@sid' => $submission->id(), '@msg' => $e->getMessage()]
+      );
+    }
+  }
+
+  /**
+   * Returns a guest's full message history, oldest first.
+   */
+  public function getReplyHistory(int $sid): array {
+    return \Drupal::database()->select('invitation_qr_replies', 'r')
+      ->fields('r', ['direction', 'message', 'created'])
+      ->condition('sid', $sid)
+      ->orderBy('created', 'ASC')
+      ->orderBy('id', 'ASC')
+      ->execute()
+      ->fetchAll();
+  }
+
   // ── QR helpers ─────────────────────────────────────────────────────────────
 
   public function generateToken(string $phone, string $uuid): string {
