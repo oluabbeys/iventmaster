@@ -1731,16 +1731,18 @@ class InvitationQrService {
   }
 
   public function generateQrPng(string $content, int $size = 150): string {
-    $builder = new Builder(
-      writer: new PngWriter(),
-      data: $content,
-      encoding: new Encoding('UTF-8'),
-      errorCorrectionLevel: ErrorCorrectionLevel::High,
-      size: $size,
-      margin: 10,
-      roundBlockSizeMode: RoundBlockSizeMode::Margin,
-    );
-    $result = $builder->build();
+    // endroid/qr-code 5.x replaced the old named-constructor-argument Builder
+    // with a fluent method-chain API (Builder::create()->writer(...)->...->build()).
+    // The constructor itself now takes zero arguments.
+    $result = Builder::create()
+      ->writer(new PngWriter())
+      ->data($content)
+      ->encoding(new Encoding('UTF-8'))
+      ->errorCorrectionLevel(ErrorCorrectionLevel::High)
+      ->size($size)
+      ->margin(10)
+      ->roundBlockSizeMode(RoundBlockSizeMode::Margin)
+      ->build();
     return $result->getString();
   }
 
