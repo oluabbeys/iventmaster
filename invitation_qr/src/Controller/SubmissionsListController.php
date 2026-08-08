@@ -1812,11 +1812,78 @@ class SubmissionsListController extends ControllerBase {
     return $count;
   }
 
-  public function rsvpDashboard(NodeInterface $node): array {
+  /**
+   * Maps a sortable column key to a comparable value from a submission's data.
+   */
+  protected function rsvpSortValue(array $d, string $key) {
+    switch ($key) {
+      case 'name':         return mb_strtolower((string) ($d['name'] ?? ''));
+      case 'phone':        return (string) ($d['phone_number'] ?? '');
+      case 'email':        return mb_strtolower((string) ($d['email'] ?? ''));
+      case 'replies':      return (int) ($d['rsvp_reply_count'] ?? 0);
+      case 'rsvp_time':    return (int) ($d['rsvp_time'] ?? 0);
+      case 'message':      return mb_strtolower((string) ($d['last_reply_body'] ?? ''));
+      case 'message_time': return (int) ($d['last_reply_time'] ?? 0);
+      default:             return 0;
+    }
+  }
+
+  /**
+   * Sorts an array of webform submissions by one of the rsvpSortValue() keys.
+   */
+  protected function sortSubmissionsBy(array $subs, string $key, string $order): array {
+    usort($subs, function ($a, $b) use ($key, $order) {
+      $va = $this->rsvpSortValue($a->getData(), $key);
+      $vb = $this->rsvpSortValue($b->getData(), $key);
+      if ($va === $vb) {
+        return 0;
+      }
+      $cmp = ($va < $vb) ? -1 : 1;
+      return $order === 'desc' ? -$cmp : $cmp;
+    });
+    return $subs;
+  }
+
+  /**
+   * Builds a clickable column header that toggles sort order, preserving
+   * every other query param so switching sort doesn't reset your page/filter.
+   */
+  protected function rsvpSortLink($label, ?string $key, string $currentSort, string $currentOrder, NodeInterface $node, Request $request) {
+    if ($key === NULL) {
+      return $label;
+    }
+    $nextOrder = ($currentSort === $key && $currentOrder === 'asc') ? 'desc' : 'asc';
+    $arrow     = $currentSort === $key ? ($currentOrder === 'asc' ? ' ▲' : ' ▼') : '';
+    $query     = $request->query->all();
+    unset($query['page']);
+    $query['sort']  = $key;
+    $query['order'] = $nextOrder;
+
+    return [
+      'data' => [
+        '#type'  => 'link',
+        '#title' => $label . $arrow,
+        '#url'   => Url::fromRoute('invitation_qr.rsvp_dashboard', ['node' => $node->id()], ['query' => $query]),
+      ],
+    ];
+  }
+
+  public function rsvpDashboard(NodeInterface $node, Request $request): array {
     $submissions = $this->qrService->getSubmissionsForNode($node->id());
 
     // Viewing the dashboard clears the "new reply" badge on the guest list.
     \Drupal::state()->set('invitation_qr.rsvp_last_viewed_' . $node->id(), \Drupal::time()->getCurrentTime());
+
+    // Default sort: most recently-replied guests first, so new free-text
+    // messages are easy to spot without scrolling — click any column header
+    // to change it.
+    $allowedSortKeys = ['name', 'phone', 'email', 'replies', 'rsvp_time', 'message', 'message_time'];
+    $sortKey = (string) $request->query->get('sort', 'message_time');
+    if (!in_array($sortKey, $allowedSortKeys, TRUE)) {
+      $sortKey = 'message_time';
+    }
+    $sortOrder = $request->query->get('order') === 'asc' ? 'asc' : 'desc';
+    $pageSize  = 25;
 
     $confirmed = $declined = $pending = [];
     foreach ($submissions as $sub) {
@@ -1826,6 +1893,10 @@ class SubmissionsListController extends ControllerBase {
       elseif ($rsvp === 'no') $declined[]  = $sub;
       else                    $pending[]   = $sub;
     }
+
+    $confirmed = $this->sortSubmissionsBy($confirmed, $sortKey, $sortOrder);
+    $declined  = $this->sortSubmissionsBy($declined,  $sortKey, $sortOrder);
+    $pending   = $this->sortSubmissionsBy($pending,   $sortKey, $sortOrder);
 
     $total = count($submissions);
     $build = [];
@@ -1860,9 +1931,15 @@ class SubmissionsListController extends ControllerBase {
       ];
     }
 
-    $makeTable = function (array $subs, string $caption) use ($node) {
+    $makeTable = function (array $subs, string $caption, int $element) use ($node, $request, $sortKey, $sortOrder, $pageSize) {
+      $tableTotal   = count($subs);
+      $pagerManager = \Drupal::service('pager.manager');
+      $pager        = $pagerManager->createPager($tableTotal, $pageSize, $element);
+      $page         = $pager->getCurrentPage();
+      $pageSubs     = array_slice($subs, $page * $pageSize, $pageSize);
+
       $rows = [];
-      foreach ($subs as $sub) {
+      foreach ($pageSubs as $sub) {
         $d       = $sub->getData();
         $ts      = $d['rsvp_time'] ?? NULL;
         $msgTs   = $d['last_reply_time'] ?? NULL;
@@ -1896,19 +1973,41 @@ class SubmissionsListController extends ControllerBase {
           $replyCell,
         ];
       }
+
+      $header = [
+        $this->rsvpSortLink($this->t('Name'), 'name', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Phone'), 'phone', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Email'), 'email', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Replies'), 'replies', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Last Reply'), 'rsvp_time', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Last Free-text Message'), 'message', $sortKey, $sortOrder, $node, $request),
+        $this->rsvpSortLink($this->t('Message Time'), 'message_time', $sortKey, $sortOrder, $node, $request),
+        $this->t('Action'),
+      ];
+
+      $pageCount     = (int) ceil($tableTotal / $pageSize);
+      $captionSuffix = $pageCount > 1 ? ' — ' . $this->t('page @cur of @total', ['@cur' => $page + 1, '@total' => $pageCount]) : '';
+
       return [
-        '#type'       => 'table',
-        '#caption'    => $caption,
-        '#header'     => [$this->t('Name'), $this->t('Phone'), $this->t('Email'), $this->t('Replies'), $this->t('Last Reply'), $this->t('Last Free-text Message'), $this->t('Message Time'), $this->t('Action')],
-        '#rows'       => $rows,
-        '#empty'      => $this->t('None.'),
-        '#attributes' => ['class' => ['iqr-submissions-table']],
+        'table' => [
+          '#type'       => 'table',
+          '#caption'    => $caption . $captionSuffix,
+          '#header'     => $header,
+          '#rows'       => $rows,
+          '#empty'      => $this->t('None.'),
+          '#attributes' => ['class' => ['iqr-submissions-table']],
+        ],
+        'pager' => [
+          '#type'     => 'pager',
+          '#element'  => $element,
+          '#quantity' => 5,
+        ],
       ];
     };
 
-    $build['confirmed_table'] = $makeTable($confirmed, $this->t('✅ Confirmed (@n)', ['@n' => count($confirmed)]));
-    $build['declined_table']  = $makeTable($declined,  $this->t('❌ Declined (@n)',  ['@n' => count($declined)]));
-    $build['pending_table']   = $makeTable($pending,   $this->t('⏳ No Response (@n)', ['@n' => count($pending)]));
+    $build['confirmed_table'] = $makeTable($confirmed, $this->t('✅ Confirmed (@n)', ['@n' => count($confirmed)]), 0);
+    $build['declined_table']  = $makeTable($declined,  $this->t('❌ Declined (@n)',  ['@n' => count($declined)]), 1);
+    $build['pending_table']   = $makeTable($pending,   $this->t('⏳ No Response (@n)', ['@n' => count($pending)]), 2);
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
     return $build;
