@@ -1911,6 +1911,23 @@ class SubmissionsListController extends ControllerBase {
     $sortOrder = $request->query->get('order') === 'asc' ? 'asc' : 'desc';
     $pageSize  = 50;
 
+    // Search across name / phone / email / last free-text message so staff
+    // can jump straight to a guest instead of scrolling through pages.
+    $search = trim((string) $request->query->get('search', ''));
+    if ($search !== '') {
+      $needle = strtolower($search);
+      $submissions = array_filter($submissions, function ($sub) use ($needle) {
+        $d   = $sub->getData();
+        $hay = strtolower(
+          ($d['name'] ?? '') . ' ' .
+          ($d['phone_number'] ?? '') . ' ' .
+          ($d['email'] ?? '') . ' ' .
+          ($d['last_reply_body'] ?? '')
+        );
+        return strpos($hay, $needle) !== FALSE;
+      });
+    }
+
     $confirmed = $declined = $pending = [];
     foreach ($submissions as $sub) {
       $d    = $sub->getData();
@@ -1933,6 +1950,12 @@ class SubmissionsListController extends ControllerBase {
       '#url'        => Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()]),
       '#attributes' => ['class' => ['iqr-back-link']],
     ];
+
+    $build['search_form'] = $this->buildSearchForm(
+      Url::fromRoute('invitation_qr.rsvp_dashboard', ['node' => $node->id()]),
+      $search,
+      $this->t('Search name, phone, email, message…')
+    );
 
     $build['stats'] = [
       '#type'       => 'html_tag',
@@ -2039,6 +2062,13 @@ class SubmissionsListController extends ControllerBase {
     $build['pending_table']   = $makeTable($pending,   $this->t('⏳ No Response (@n)', ['@n' => count($pending)]), 2);
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
+
+    // Never let Dynamic/Internal Page Cache serve a stale copy — the free-text
+    // replies and RSVP status behind this page are written via raw SQL
+    // (see InvitationQrService::saveSubmissionField()) and change constantly
+    // from an external webhook, outside of any normal cache-tag invalidation.
+    $build['#cache'] = ['max-age' => 0];
+
     return $build;
   }
 

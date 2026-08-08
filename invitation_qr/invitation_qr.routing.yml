@@ -204,6 +204,8 @@ invitation_qr.rsvp_dashboard:
   requirements:
     _permission: 'access invitation qr submissions'
     node: \d+
+  options:
+    no_cache: TRUE
 
 invitation_qr.templates:
   path: '/admin/invitation-qr/templates'

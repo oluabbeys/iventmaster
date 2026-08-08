@@ -1714,6 +1714,16 @@ class InvitationQrService {
           ])
           ->execute();
       }
+
+      // This writes straight to the webform_submission_data table, bypassing
+      // the Entity API entirely — so Drupal's entity static/persistent cache
+      // never learns the submission changed. Without this, any code that
+      // later loads this submission (e.g. the RSVP Dashboard) can get back a
+      // cached WebformSubmission object whose data array still has the old
+      // value, even though the database itself is already up to date. This
+      // was the root cause of confirmed webhook saves not showing up in the
+      // RSVP Dashboard until something else happened to clear the cache.
+      $this->entityTypeManager->getStorage('webform_submission')->resetCache([$submission->id()]);
     }
     catch (\Throwable $e) {
       $this->logger->error(
