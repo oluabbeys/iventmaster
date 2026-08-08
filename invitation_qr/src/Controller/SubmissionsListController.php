@@ -1883,7 +1883,7 @@ class SubmissionsListController extends ControllerBase {
       $sortKey = 'message_time';
     }
     $sortOrder = $request->query->get('order') === 'asc' ? 'asc' : 'desc';
-    $pageSize  = 25;
+    $pageSize  = 50;
 
     $confirmed = $declined = $pending = [];
     foreach ($submissions as $sub) {
@@ -1939,12 +1939,13 @@ class SubmissionsListController extends ControllerBase {
       $pageSubs     = array_slice($subs, $page * $pageSize, $pageSize);
 
       $rows = [];
-      foreach ($pageSubs as $sub) {
+      foreach ($pageSubs as $i => $sub) {
         $d       = $sub->getData();
         $ts      = $d['rsvp_time'] ?? NULL;
         $msgTs   = $d['last_reply_time'] ?? NULL;
         $msgBody = $d['last_reply_body'] ?? '';
         $phone   = $d['phone_number'] ?? '';
+        $serial  = ($page * $pageSize) + $i + 1;
 
         $replyCell = '—';
         if ($msgBody !== '' && $phone !== '') {
@@ -1963,6 +1964,7 @@ class SubmissionsListController extends ControllerBase {
         }
 
         $rows[] = [
+          $serial,
           $d['name']  ?? '—',
           $phone      ?: '—',
           $d['email'] ?? '—',
@@ -1975,6 +1977,7 @@ class SubmissionsListController extends ControllerBase {
       }
 
       $header = [
+        $this->t('#'),
         $this->rsvpSortLink($this->t('Name'), 'name', $sortKey, $sortOrder, $node, $request),
         $this->rsvpSortLink($this->t('Phone'), 'phone', $sortKey, $sortOrder, $node, $request),
         $this->rsvpSortLink($this->t('Email'), 'email', $sortKey, $sortOrder, $node, $request),

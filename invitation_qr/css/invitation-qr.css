@@ -138,6 +138,13 @@
 .iqr-submissions-table td { vertical-align: middle; }
 .iqr-events-table td      { vertical-align: middle; }
 
+/* Left-align every cell (header + body) by default; the checkbox column
+   below overrides back to centered since it's just a tiny icon column. */
+.iqr-submissions-table th,
+.iqr-submissions-table td {
+  text-align: left;
+}
+
 /* ── Bulk actions bar ──────────────────────────────────────────────────── */
 .iqr-bulk-bar {
   display: flex;
