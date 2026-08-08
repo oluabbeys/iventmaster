@@ -38,3 +38,6 @@ default_access_template: ''
 twilio_templates: '{"wedding_invitation":{"id":"wedding_invitation","label":"Wedding Invitation","sid":"HX11156f0d431adfb8395327b9d8fa8809","variables":{"1":"guest_name","2":"bride_father_name","3":"groom_father_name","4":"bride_name","5":"groom_name","6":"event_date","7":"event_venue","8":"event_time"}}}'
 
 twilio_messaging_service_sid: 'MG398bc30d6886496c58ce1d2bfc6547be'
+daily_conversation_limit: 250
+send_cron_key: ''
+reply_notification_email: ''

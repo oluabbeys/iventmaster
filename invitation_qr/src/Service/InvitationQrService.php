@@ -168,9 +168,13 @@ class InvitationQrService {
 
         $stampedDir = 'public://invitation-stamped';
         $this->fileSystem->prepareDirectory($stampedDir, FileSystemInterface::CREATE_DIRECTORY);
+        // Include timestamp in filename so re-stamps are never served from
+        // browser or CDN cache — each re-stamp produces a unique file URL.
+        // (Mirrors the same fix already applied to access cards below.)
+        $invFilename = 'stamped-inv-' . $token . '-' . time() . '.png';
         $stampedInvFile = $this->fileRepository->writeData(
           $stampedInvData,
-          $stampedDir . '/stamped-inv-' . $token . '.png',
+          $stampedDir . '/' . $invFilename,
           FileSystemInterface::EXISTS_REPLACE
         );
         $stampedInvFile->setPermanent();
@@ -527,6 +531,320 @@ class InvitationQrService {
     return $json;
   }
 
+  // ── Global blocklist ───────────────────────────────────────────────────────
+  //
+  // Numbers that had a genuine delivery failure (bad number, blocked us,
+  // opted out, invalid WhatsApp account, etc.) are recorded here and skipped
+  // on every future send — single, bulk, adhoc, RSVP reminder, all of it,
+  // since every send path funnels through sendViaContentSid(), sendViaTwilio()
+  // or sendCardImage() below, and all three check isBlocklisted() first.
+  //
+  // Numbers that failed ONLY because we hit our own platform sending-rate
+  // limit (Twilio/WhatsApp error 63018) are deliberately NOT added — that is
+  // a "try again later" problem, not a problem with the number.
+
+  const BLOCKLIST_KV_COLLECTION = 'invitation_qr_blocklist';
+
+  /**
+   * Normalises a phone number to the same +digits key used everywhere else.
+   */
+  protected function blocklistKey(string $phone): string {
+    $key = preg_replace('/[^0-9+]/', '', $phone);
+    if ($key !== '' && !str_starts_with($key, '+')) {
+      $key = '+' . $key;
+    }
+    return $key;
+  }
+
+  /**
+   * Twilio/WhatsApp error codes that mean "our own sending rate was exceeded"
+   * rather than "something is wrong with this number". These must NEVER
+   * result in a blocklist entry.
+   */
+  public static function isRateLimitErrorCode(string $errorCode): bool {
+    // 63018 = WhatsApp per-user/session rate limit exceeded.
+    // 63032 = Concurrent automated messages limit exceeded.
+    // 63033 = Broadcast/rate limit exceeded (Twilio Messaging Service level).
+    return in_array((string) $errorCode, ['63018', '63032', '63033'], TRUE);
+  }
+
+  public function isBlocklisted(string $phone): bool {
+    $key = $this->blocklistKey($phone);
+    if ($key === '') {
+      return FALSE;
+    }
+    return \Drupal::keyValue(self::BLOCKLIST_KV_COLLECTION)->has($key);
+  }
+
+  /**
+   * Adds a number to the global blocklist. Safe to call repeatedly — updates
+   * the existing entry (last-seen time, latest error) instead of duplicating.
+   */
+  public function addToBlocklist(string $phone, string $reason, string $errorCode = '', string $messageStatus = ''): void {
+    $key = $this->blocklistKey($phone);
+    if ($key === '') {
+      return;
+    }
+
+    $kv       = \Drupal::keyValue(self::BLOCKLIST_KV_COLLECTION);
+    $existing = $kv->get($key, []);
+    $now      = \Drupal::time()->getCurrentTime();
+
+    $kv->set($key, [
+      'phone'        => $key,
+      'reason'       => $reason,
+      'error_code'   => $errorCode,
+      'status'       => $messageStatus,
+      'first_seen'   => $existing['first_seen'] ?? $now,
+      'last_seen'    => $now,
+      'fail_count'   => (int) ($existing['fail_count'] ?? 0) + 1,
+    ]);
+
+    $this->logger->warning('Added @phone to global blocklist (reason=@reason errorCode=@code status=@status).', [
+      '@phone'  => $key,
+      '@reason' => $reason,
+      '@code'   => $errorCode,
+      '@status' => $messageStatus,
+    ]);
+  }
+
+  public function removeFromBlocklist(string $phone): void {
+    $key = $this->blocklistKey($phone);
+    if ($key === '') {
+      return;
+    }
+    \Drupal::keyValue(self::BLOCKLIST_KV_COLLECTION)->delete($key);
+    $this->logger->info('Removed @phone from global blocklist.', ['@phone' => $key]);
+  }
+
+  /**
+   * Returns all blocklist entries, newest failure first.
+   */
+  public function getBlocklist(): array {
+    $all = \Drupal::keyValue(self::BLOCKLIST_KV_COLLECTION)->getAll();
+    uasort($all, fn($a, $b) => ($b['last_seen'] ?? 0) <=> ($a['last_seen'] ?? 0));
+    return $all;
+  }
+
+  // ── Daily sending-rate throttle ──────────────────────────────────────────────
+  //
+  // WhatsApp caps how many NEW unique conversations a business-initiated
+  // template message can open in a rolling 24h window (Tier 1 = 250, Tier 2 =
+  // 1,000, Tier 3 = 10,000 — configurable in settings to match your actual
+  // approved tier). Every number we successfully open a template conversation
+  // with (sendViaContentSid) is recorded here with a timestamp. Before each
+  // send, processSendQueueItem() checks whether we're still under the cap for
+  // this rolling window — if not, the whole batch run stops itself instead of
+  // marking guests as "failed" (which used to require a manual Resend click
+  // for every one of them, exactly the busywork this replaces).
+
+  const RATE_WINDOW_KV_COLLECTION = 'invitation_qr_rate_window';
+  const RATE_WINDOW_SECONDS       = 86400;
+
+  /**
+   * Records that we opened (or re-used) a conversation with this number.
+   */
+  public function recordConversationOpened(string $phone): void {
+    $key = $this->blocklistKey($phone);
+    if ($key === '') {
+      return;
+    }
+    \Drupal::keyValue(self::RATE_WINDOW_KV_COLLECTION)->set($key, \Drupal::time()->getCurrentTime());
+  }
+
+  /**
+   * Counts unique numbers messaged within the current rolling window, and
+   * opportunistically prunes entries that have aged out so the store doesn't
+   * grow forever.
+   */
+  protected function getRolling24hConversationCount(): int {
+    $kv     = \Drupal::keyValue(self::RATE_WINDOW_KV_COLLECTION);
+    $cutoff = \Drupal::time()->getCurrentTime() - self::RATE_WINDOW_SECONDS;
+    $count  = 0;
+    foreach ($kv->getAll() as $key => $ts) {
+      if ($ts >= $cutoff) {
+        $count++;
+      }
+      else {
+        $kv->delete($key);
+      }
+    }
+    return $count;
+  }
+
+  /**
+   * Whether sending to $phone right now would need a NEW slot in the daily
+   * conversation cap. A number already messaged within the current window
+   * doesn't need a new slot (WhatsApp only counts unique conversations), so
+   * re-sends/replies to an already-open conversation are never blocked here.
+   *
+   * A limit of 0 (or unset) disables throttling entirely.
+   */
+  public function isRateLimitReached($config, string $phone = ''): bool {
+    $limit = $this->getEffectiveDailyLimit($config);
+    if ($limit <= 0) {
+      return FALSE;
+    }
+
+    $key = $phone !== '' ? $this->blocklistKey($phone) : '';
+    if ($key !== '') {
+      $existingTs = \Drupal::keyValue(self::RATE_WINDOW_KV_COLLECTION)->get($key);
+      if ($existingTs && $existingTs >= \Drupal::time()->getCurrentTime() - self::RATE_WINDOW_SECONDS) {
+        // Already counted in the current window — sending again is free.
+        return FALSE;
+      }
+    }
+
+    return $this->getRolling24hConversationCount() >= $limit;
+  }
+
+  // ── Empirically-learned rate limit ───────────────────────────────────────────
+  //
+  // The configured "Daily conversation limit" is a guess (the admin's best
+  // understanding of their WhatsApp tier). If Twilio actually rejects a send
+  // with a rate-limit error code (63018/63032/63033) despite that, the real
+  // ceiling is LOWER than configured — recordObservedRateLimit() captures how
+  // many unique conversations we'd actually opened at that exact moment and
+  // remembers it as the true ceiling until it expires (tiers can go UP too,
+  // e.g. after a WhatsApp quality/volume upgrade, so this isn't permanent) or
+  // until the admin clears it in Settings after confirming a tier change.
+
+  const OBSERVED_RATE_LIMIT_STATE_KEY = 'invitation_qr.observed_rate_limit';
+  const OBSERVED_RATE_LIMIT_TTL       = 30 * 86400;
+
+  /**
+   * Called whenever Twilio actually returns a rate-limit error code. Records
+   * the current rolling-window count as the real observed ceiling.
+   */
+  public function recordObservedRateLimit(): void {
+    $observed = $this->getRolling24hConversationCount();
+    if ($observed <= 0) {
+      return;
+    }
+    \Drupal::state()->set(self::OBSERVED_RATE_LIMIT_STATE_KEY, [
+      'value' => $observed,
+      'time'  => \Drupal::time()->getCurrentTime(),
+    ]);
+    $this->logger->warning('Twilio returned a rate-limit error — recording @n as the empirically observed daily conversation ceiling (used instead of the configured value if lower, until it expires or is cleared in Settings).', ['@n' => $observed]);
+  }
+
+  /**
+   * Returns the observed-limit record (value + when it was recorded), or
+   * NULL if none is active (never recorded, expired, or cleared).
+   */
+  public function getObservedRateLimit(): ?array {
+    $observed = \Drupal::state()->get(self::OBSERVED_RATE_LIMIT_STATE_KEY);
+    if (!$observed || empty($observed['value'])) {
+      return NULL;
+    }
+    $age = \Drupal::time()->getCurrentTime() - ($observed['time'] ?? 0);
+    if ($age >= self::OBSERVED_RATE_LIMIT_TTL) {
+      return NULL;
+    }
+    return $observed;
+  }
+
+  public function clearObservedRateLimit(): void {
+    \Drupal::state()->delete(self::OBSERVED_RATE_LIMIT_STATE_KEY);
+  }
+
+  /**
+   * The limit actually enforced: whichever is lower of the admin's
+   * configured value and a still-fresh empirically observed ceiling. If
+   * throttling is configured OFF (0) but we've still observed a real Twilio
+   * rate-limit error, the observed ceiling is used anyway — a proven wall is
+   * more trustworthy than "disabled".
+   */
+  protected function getEffectiveDailyLimit($config): int {
+    $configured = (int) ($config->get('daily_conversation_limit') ?? 250);
+    $observed   = $this->getObservedRateLimit();
+
+    if ($observed === NULL) {
+      return $configured;
+    }
+    if ($configured <= 0) {
+      return (int) $observed['value'];
+    }
+    return min($configured, (int) $observed['value']);
+  }
+
+  // ── Active send-batch tracking + completion notification ────────────────────
+  //
+  // Drupal's State API has no way to list "all keys starting with X", so we
+  // can't discover which nodes have a send batch in progress just from the
+  // per-node state counters (send_inv_total_*/send_access_total_*) that
+  // already track batch progress. This small key-value registry mirrors
+  // "there's an active batch for node N, type T" so the unattended
+  // auto-resume sweep (cronSend()) knows what to check and who to notify
+  // when a batch completes — same as the existing UI already does inline
+  // when you click Send and it reaches "All sent successfully".
+
+  const ACTIVE_SEND_BATCHES_KV = 'invitation_qr_active_send_batches';
+
+  public function registerActiveSendBatch(int $nodeId, string $type, int $total): void {
+    \Drupal::keyValue(self::ACTIVE_SEND_BATCHES_KV)->set($nodeId . ':' . $type, [
+      'node_id' => $nodeId,
+      'type'    => $type,
+      'total'   => $total,
+      'started' => \Drupal::time()->getCurrentTime(),
+    ]);
+  }
+
+  public function clearActiveSendBatch(int $nodeId, string $type): void {
+    \Drupal::keyValue(self::ACTIVE_SEND_BATCHES_KV)->delete($nodeId . ':' . $type);
+  }
+
+  public function getActiveSendBatches(): array {
+    return \Drupal::keyValue(self::ACTIVE_SEND_BATCHES_KV)->getAll();
+  }
+
+  /**
+   * Emails the configured notification address when a bulk send campaign
+   * (invitations or access cards, for one event) has fully finished —
+   * whether that happened because someone kept clicking Send, or because
+   * the auto-resume URL (cronSend()) drained the rest unattended.
+   */
+  public function notifySendCampaignComplete(?object $node, string $type, int $total): void {
+    $config = $this->configFactory->get('invitation_qr.settings');
+    $to = trim((string) ($config->get('reply_notification_email') ?: ''));
+    if ($to === '') {
+      return;
+    }
+
+    $label     = $type === 'access' ? 'access card' : 'invitation';
+    $eventName = $node ? $node->label() : '(event not found)';
+
+    try {
+      $params = [
+        'subject' => "All $label sends finished — $eventName",
+        'body'    => [
+          "The $label send batch for \"$eventName\" has finished.",
+          '',
+          "Total sent in this batch: $total",
+          '',
+          'View guests: ' . \Drupal::request()->getSchemeAndHttpHost() . ($node ? '/admin/invitation-qr/submissions/' . $node->id() : ''),
+        ],
+      ];
+      \Drupal::service('plugin.manager.mail')->mail(
+        'invitation_qr',
+        'send_campaign_complete',
+        $to,
+        \Drupal::languageManager()->getDefaultLanguage()->getId(),
+        $params,
+        NULL,
+        TRUE
+      );
+      $this->logger->info('Send-campaign-complete email sent to @to for node @nid (@type).', [
+        '@to'   => $to,
+        '@nid'  => $node ? $node->id() : '?',
+        '@type' => $type,
+      ]);
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Could not send campaign-complete notification: @msg', ['@msg' => $e->getMessage()]);
+    }
+  }
+
   // ── Twilio senders ─────────────────────────────────────────────────────────
 
   /**
@@ -646,6 +964,11 @@ class InvitationQrService {
     $phone = preg_replace('/[^0-9+]/', '', $phone);
     if (!str_starts_with($phone, '+')) $phone = '+' . $phone;
 
+    if ($this->isBlocklisted($phone)) {
+      $this->logger->warning('Skipping ContentSid send to @phone — number is on the global blocklist.', ['@phone' => $phone]);
+      return FALSE;
+    }
+
     $toNumber    = $channel === 'whatsapp' ? 'whatsapp:' . $phone : $phone;
     $callbackUrl = \Drupal::request()->getSchemeAndHttpHost() . '/invitation-qr/twilio-webhook';
 
@@ -693,6 +1016,9 @@ class InvitationQrService {
         '@phone' => $phone,
         '@sid'   => $messageSid,
       ]);
+      // This opens/renews the 24h conversation window for the daily
+      // sending-rate throttle (see isRateLimitReached() above).
+      $this->recordConversationOpened($phone);
       // Save the Twilio Message SID so the status callback can match it.
       if ($messageSid && !empty($submissionData['sid'])) {
         $sub = $this->entityTypeManager->getStorage('webform_submission')->load((int) $submissionData['sid']);
@@ -712,6 +1038,17 @@ class InvitationQrService {
       '@msg'   => $decoded['message'] ?? '',
       '@resp'  => $response,
     ]);
+
+    // Twilio rejected the send outright (e.g. invalid number) — blocklist it
+    // unless this was our own sending-rate limit being hit.
+    $twilioErrorCode = (string) ($decoded['code'] ?? '');
+    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->addToBlocklist($phone, 'Twilio API rejected ContentSid send', $twilioErrorCode, (string) $httpCode);
+    }
+    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->recordObservedRateLimit();
+    }
+
     return FALSE;
   }
 
@@ -733,6 +1070,11 @@ class InvitationQrService {
 
     $phone = preg_replace('/[^0-9+]/', '', $phone);
     if (!str_starts_with($phone, '+')) $phone = '+' . $phone;
+
+    if ($this->isBlocklisted($phone)) {
+      $this->logger->warning('Skipping card image send to @phone — number is on the global blocklist.', ['@phone' => $phone]);
+      return FALSE;
+    }
 
     $toNumber   = $channel === 'whatsapp' ? 'whatsapp:' . $phone : $phone;
     $fromNumber = $channel === 'whatsapp' ? 'whatsapp:' . $from  : $from;
@@ -769,6 +1111,15 @@ class InvitationQrService {
       '@phone' => $phone,
       '@msg'   => $decoded['message'] ?? $response,
     ]);
+
+    $twilioErrorCode = (string) ($decoded['code'] ?? '');
+    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->addToBlocklist($phone, 'Twilio API rejected card image send', $twilioErrorCode, (string) $httpCode);
+    }
+    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->recordObservedRateLimit();
+    }
+
     return FALSE;
   }
 
@@ -797,6 +1148,15 @@ class InvitationQrService {
 
     $phone = preg_replace('/[^0-9+]/', '', $phone);
     if (!str_starts_with($phone, '+')) $phone = '+' . $phone;
+
+    // Global blocklist: skip numbers that previously had a genuine delivery
+    // failure (bad number, blocked, opted out, etc). Numbers that only ever
+    // failed due to hitting our own sending-rate limit are NOT blocklisted —
+    // see isRateLimitErrorCode() / addToBlocklist() above.
+    if ($this->isBlocklisted($phone)) {
+      $this->logger->warning('Skipping send to @phone — number is on the global blocklist (previous delivery failure).', ['@phone' => $phone]);
+      return FALSE;
+    }
 
     $toNumber    = $channel === 'whatsapp' ? 'whatsapp:' . $phone : $phone;
     $fromNumber  = $channel === 'whatsapp' ? 'whatsapp:' . $from  : $from;
@@ -859,6 +1219,15 @@ class InvitationQrService {
       '@code'  => $httpCode,
       '@msg'   => $decoded['message'] ?? $response,
     ]);
+
+    $twilioErrorCode = (string) ($decoded['code'] ?? '');
+    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->addToBlocklist($phone, 'Twilio API rejected send', $twilioErrorCode, (string) $httpCode);
+    }
+    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+      $this->recordObservedRateLimit();
+    }
+
     return FALSE;
   }
 
@@ -1173,6 +1542,19 @@ class InvitationQrService {
     $config = $this->configFactory->get('invitation_qr.settings');
     $data   = $sub->getData();
     $node   = $this->findParentNode($sub);
+
+    // Daily WhatsApp sending-rate throttle: if we're at the cap for the
+    // current rolling 24h window, stop here WITHOUT marking this guest as
+    // "failed" — roll their state back to 'unsent' so they're picked up
+    // automatically the next time "Send All" is clicked (or immediately, once
+    // the window has room again), and stop the whole batch run so we don't
+    // burn through the rest of the queue only to hit the same wall.
+    if ($this->isRateLimitReached($config, $data['phone_number'] ?? '')) {
+      $this->logger->warning('Send queue: daily WhatsApp conversation limit reached — pausing. sid=@sid will retry automatically later.', ['@sid' => $sid]);
+      if ($type === 'invitation') $this->resetInvSendState($sid);
+      else $this->resetAccessSendState($sid);
+      throw new \Drupal\Core\Queue\SuspendQueueException('Daily WhatsApp conversation limit reached.');
+    }
 
     if ($type === 'invitation') {
       $fid = $data['stamped_card_fid'] ?? NULL;

@@ -42,6 +42,84 @@ function invitation_qr_webform_submission_update(WebformSubmissionInterface $sub
 }
 
 /**
+ * Implements hook_webform_submission_presave().
+ *
+ * Auto-normalises the phone number to +234 E.164 format at save time —
+ * handles the same messy formats we used to have to clean up by hand in
+ * CSV exports (local "0..." format, missing "+", stray extra numbers pasted
+ * into one field, etc). Only ever tightens an already-parseable number;
+ * never blocks a submission and never guesses when it isn't confident, so
+ * this cannot stop a guest from submitting.
+ */
+function invitation_qr_webform_submission_presave(WebformSubmissionInterface $submission): void {
+  $config = \Drupal::config('invitation_qr.settings');
+  if ($submission->getWebform()->id() !== $config->get('webform_id')) {
+    return;
+  }
+
+  $raw = (string) ($submission->getElementData('phone_number') ?? '');
+  if (trim($raw) === '') {
+    return;
+  }
+
+  $normalised = _invitation_qr_normalise_phone($raw);
+  if ($normalised !== '' && $normalised !== $raw) {
+    $submission->setElementData('phone_number', $normalised);
+    \Drupal::logger('invitation_qr')->info('Normalised phone number on submission @sid: "@old" -> "@new"', [
+      '@sid' => $submission->id() ?: '(new)',
+      '@old' => $raw,
+      '@new' => $normalised,
+    ]);
+  }
+}
+
+/**
+ * Best-effort phone normaliser — Nigeria-specific, matches the manual
+ * cleanup rules used on past CSV exports. Returns the original string
+ * unchanged if it can't confidently normalise it (never guesses wrong).
+ */
+function _invitation_qr_normalise_phone(string $raw): string {
+  // If more than one number was pasted into the field (comma/slash/semicolon
+  // separated), just take the first one.
+  $parts     = preg_split('/[,\/;]+/', $raw);
+  $candidate = trim($parts[0] ?? $raw);
+  $digits    = preg_replace('/[^0-9+]/', '', $candidate);
+
+  if ($digits === '') {
+    return $raw;
+  }
+
+  // Already +234XXXXXXXXXX (14 chars total).
+  if (str_starts_with($digits, '+234') && strlen($digits) === 14) {
+    return $digits;
+  }
+
+  // Local format: 0XXXXXXXXXX (11 digits).
+  if (str_starts_with($digits, '0') && strlen($digits) === 11) {
+    return '+234' . substr($digits, 1);
+  }
+
+  // 234XXXXXXXXXX without the leading +.
+  if (str_starts_with($digits, '234') && strlen($digits) === 13) {
+    return '+' . $digits;
+  }
+
+  // Bare 10-digit local number with no prefix at all — assume Nigeria.
+  if (!str_starts_with($digits, '+') && strlen($digits) === 10) {
+    return '+234' . $digits;
+  }
+
+  // Already has a "+" and looks like a plausible full international number
+  // (e.g. a guest outside Nigeria) — leave it as-is.
+  if (str_starts_with($digits, '+') && strlen($digits) >= 11) {
+    return $digits;
+  }
+
+  // Doesn't match any confident pattern — don't guess, leave untouched.
+  return $raw;
+}
+
+/**
  * Pushes a submission onto the queue (or processes immediately in real-time mode).
  */
 function _invitation_qr_queue_or_process(WebformSubmissionInterface $submission): void {
@@ -83,6 +161,22 @@ function invitation_qr_cron(): void {
   // Queue processing is handled by the QueueWorker plugin automatically.
   // This hook is intentionally left minimal.
   // You may add cleanup tasks here (e.g. delete orphaned temp files).
+}
+
+/**
+ * Implements hook_mail().
+ *
+ * Formats both notification emails the module sends: the "new free-text
+ * reply" staff alert (TwilioWebhookController::notifyStaffOfReply()) and the
+ * "send campaign finished" alert (InvitationQrService::notifySendCampaignComplete()).
+ * Both pass the same simple ['subject' => ..., 'body' => [...]] shape.
+ */
+function invitation_qr_mail($key, &$message, $params): void {
+  if (!in_array($key, ['reply_notification', 'send_campaign_complete'], TRUE)) {
+    return;
+  }
+  $message['subject'] = $params['subject'] ?? 'Invitation QR notification';
+  $message['body'][]  = implode("\n", $params['body'] ?? []);
 }
 
 /**

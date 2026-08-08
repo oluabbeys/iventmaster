@@ -4,6 +4,7 @@ namespace Drupal\invitation_qr\Form;
 
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Url;
 
 /**
  * Admin settings form — QR, name overlay, Twilio, check-in role,
@@ -165,6 +166,62 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       '#default_value' => $c->get('twilio_from'),
       '#description' => $this->t('E.g. +14155238886 (without whatsapp: prefix).'),
     ];
+    $form['twilio']['daily_conversation_limit'] = [
+      '#type'          => 'number',
+      '#title'         => $this->t('Daily conversation limit (throttle)'),
+      '#default_value' => $c->get('daily_conversation_limit') ?? 250,
+      '#min'           => 0,
+      '#description'   => $this->t('Max NEW unique WhatsApp conversations to open per rolling 24h window — match your actual approved tier (Tier 1 = 250, Tier 2 = 1,000, Tier 3 = 10,000; check Meta Business Manager → WhatsApp Manager for your current tier — tiers can go up automatically as your quality/volume grows, so revisit this number occasionally). Bulk sends pause automatically once this is hit; they resume the next time you click Send, or on their own if you\'ve set up the Auto-Resume URL below. Set to 0 to disable throttling.'),
+    ];
+
+    $qrService     = \Drupal::service('invitation_qr.qr_service');
+    $observedLimit = $qrService->getObservedRateLimit();
+    if ($observedLimit) {
+      $observedWhen = \Drupal::service('date.formatter')->format((int) $observedLimit['time'], 'short');
+      $form['twilio']['observed_limit_info'] = [
+        '#markup' => '<p><strong>' . $this->t('⚠ Twilio actually rejected a send with a rate-limit error on @when — the real ceiling right now is @n, which is being used instead of the configured number above (whichever is lower). This self-corrects and expires after 30 days, or clear it below once you\'ve confirmed a tier change.', [
+          '@when' => $observedWhen,
+          '@n'    => $observedLimit['value'],
+        ]) . '</strong></p>',
+      ];
+      $form['twilio']['reset_observed_rate_limit'] = [
+        '#type'  => 'checkbox',
+        '#title' => $this->t('Clear the learned rate limit now (check this after confirming your WhatsApp tier increased)'),
+        '#default_value' => FALSE,
+      ];
+    }
+
+    // ── Auto-Resume (unattended sending) ───────────────────────────────────────
+    $form['autoresume'] = ['#type' => 'details', '#title' => $this->t('Auto-Resume (unattended sending)'), '#open' => FALSE];
+    $cronKey = $c->get('send_cron_key') ?: bin2hex(random_bytes(16));
+    $form['autoresume']['send_cron_key'] = [
+      '#type'          => 'textfield',
+      '#title'         => $this->t('Auto-resume secret key'),
+      '#default_value' => $cronKey,
+      '#description'   => $this->t('Click Save once to activate this key, then point a scheduled task (e.g. a cron job, or an uptime/monitoring service that can hit a URL every few hours) at the URL below. Each hit processes a batch of pending sends and — once a whole campaign finishes — emails the address in Notifications below. Without this, sends only advance when someone clicks Send in the UI.'),
+    ];
+    try {
+      $resumeUrl = Url::fromRoute('invitation_qr.cron_send', [], ['absolute' => TRUE, 'query' => ['key' => $cronKey]])->toString();
+      $form['autoresume']['resume_url_display'] = [
+        '#markup' => '<p><code>' . $resumeUrl . '</code></p>',
+      ];
+    }
+    catch (\Throwable $e) {
+      // Route not registered yet (module just deployed, cache not rebuilt).
+      // Don't let this break the whole settings page.
+      $form['autoresume']['resume_url_display'] = [
+        '#markup' => '<p>' . $this->t('URL not available yet — run a cache rebuild (drush cr) after deploying, then reload this page.') . '</p>',
+      ];
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+    $form['notifications'] = ['#type' => 'details', '#title' => $this->t('Notifications'), '#open' => FALSE];
+    $form['notifications']['reply_notification_email'] = [
+      '#type'          => 'email',
+      '#title'         => $this->t('Email to notify on new free-text replies and finished send campaigns'),
+      '#default_value' => $c->get('reply_notification_email') ?: '',
+      '#description'   => $this->t('Used for two things: when a guest sends a message that isn\'t a plain YES/NO (e.g. "I was told I\'m not eligible"), and when a bulk send campaign (invitations or access cards) finishes completely. Leave blank to disable both.'),
+    ];
 
     // ── Check-in ──────────────────────────────────────────────────────────────
     $form['checkin'] = ['#type' => 'details', '#title' => $this->t('Check-In Settings'), '#open' => TRUE];
@@ -255,6 +312,9 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ->set('twilio_account_sid',      $form_state->getValue('twilio_account_sid'))
       ->set('twilio_auth_token',       $authToken)
       ->set('twilio_from',             $form_state->getValue('twilio_from'))
+      ->set('daily_conversation_limit', (int) $form_state->getValue('daily_conversation_limit'))
+      ->set('send_cron_key',           trim((string) $form_state->getValue('send_cron_key')))
+      ->set('reply_notification_email', trim((string) $form_state->getValue('reply_notification_email')))
       ->set('checkin_role',            $form_state->getValue('checkin_role'))
       ->set('rsvp_enabled',            (bool) $form_state->getValue('rsvp_enabled'))
       ->set('rsvp_yes_keywords',       $form_state->getValue('rsvp_yes_keywords'))
@@ -265,6 +325,11 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ->set('rsvp_reminder_message',   $form_state->getValue('rsvp_reminder_message'))
       ->set('process_realtime',        (bool) $form_state->getValue('process_realtime'))
       ->save();
+
+    if ($form_state->getValue('reset_observed_rate_limit')) {
+      \Drupal::service('invitation_qr.qr_service')->clearObservedRateLimit();
+      $this->messenger()->addStatus($this->t('Learned rate limit cleared — the configured Daily conversation limit will be used on its own again.'));
+    }
 
     parent::submitForm($form, $form_state);
   }

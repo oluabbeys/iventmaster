@@ -6,6 +6,17 @@ invitation_qr.verify_guest:
   requirements:
     _access: 'TRUE'
 
+invitation_qr.cron_send:
+  path: '/invitation-qr/cron-send'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::cronSend'
+    _title: 'Auto-Resume Pending Sends'
+  methods: [GET]
+  requirements:
+    _access: 'TRUE'
+  options:
+    no_cache: TRUE
+
 invitation_qr.admin_settings:
   path: '/admin/config/invitation-qr/settings'
   defaults:
@@ -21,6 +32,31 @@ invitation_qr.all_events:
     _title: 'Invitation Events'
   requirements:
     _permission: 'access invitation qr submissions'
+
+invitation_qr.blocklist:
+  path: '/admin/invitation-qr/blocklist'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::blocklist'
+    _title: 'Global Blocklist'
+  requirements:
+    _permission: 'administer invitation qr'
+
+invitation_qr.blocklist_export:
+  path: '/admin/invitation-qr/blocklist/export'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::blocklistExport'
+    _title: 'Export Blocklist CSV'
+  requirements:
+    _permission: 'administer invitation qr'
+
+invitation_qr.blocklist_remove:
+  path: '/admin/invitation-qr/blocklist/remove'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::blocklistRemove'
+    _title: 'Remove from Blocklist'
+  methods: [POST]
+  requirements:
+    _permission: 'administer invitation qr'
 
 invitation_qr.submissions_list:
   path: '/admin/invitation-qr/submissions/{node}'

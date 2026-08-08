@@ -77,13 +77,25 @@ class TwilioWebhookController extends ControllerBase {
       $this->log("signature OK");
     }
 
+    $phone = $this->normalisePhone($from, $waId);
+    $this->log("normalised phone=$phone");
+
+    // Opt-out (STOP) — respected regardless of whether RSVP is enabled, and
+    // regardless of whether we can even match this number to a guest. Reuses
+    // the same global blocklist as delivery failures, so an opted-out number
+    // is skipped on every future send (single, bulk, adhoc, reminder — all of
+    // them) without needing a separate mechanism.
+    $optOutKeywords = ['stop', 'unsubscribe', 'opt out', 'optout', 'opt-out', 'remove me', 'quit'];
+    if ($phone && $body !== '' && in_array(strtolower(trim($body)), $optOutKeywords, TRUE)) {
+      $this->qrService->addToBlocklist($phone, 'Guest opted out (STOP keyword)', '', 'opted_out');
+      $this->log("OPT-OUT: $phone requested STOP — added to blocklist, no further messages will be sent, no auto-reply sent.");
+      return $this->twiml('');
+    }
+
     if (!$config->get('rsvp_enabled')) {
       $this->log("BLOCKED: RSVP is disabled in settings");
       return $this->twiml('');
     }
-
-    $phone = $this->normalisePhone($from, $waId);
-    $this->log("normalised phone=$phone");
 
     if (!$phone) {
       $this->log("ABORT: could not parse phone number");
@@ -113,6 +125,23 @@ class TwilioWebhookController extends ControllerBase {
     // Resolve intent — check ButtonPayload first (most reliable for Quick Reply).
     $intent = $this->resolveIntent($buttonPayload, $buttonText, $body, $config);
     $this->log("intent=$intent (buttonPayload=$buttonPayload buttonText=$buttonText body=$body)");
+
+    // Free-text reply that isn't a recognised YES/NO — save it so staff can see
+    // and respond to it from the admin UI (previously this only went to the
+    // transient log file and was otherwise invisible in Drupal).
+    if ($intent === 'unknown' && trim($body) !== '') {
+      try {
+        $this->qrService->saveSubmissionField($submission, 'last_reply_body', $body);
+        $this->qrService->saveSubmissionField($submission, 'last_reply_time', (string) \Drupal::time()->getCurrentTime());
+        $this->log("saved free-text reply to sid={$submission->id()}: $body");
+        $this->notifyStaffOfReply($config, $submission, $name, $phone, $body);
+      }
+      catch (\Throwable $e) {
+        // Non-fatal — if the last_reply_* fields don't exist on the webform yet,
+        // just log it and continue with the normal RSVP-prompt flow below.
+        $this->log("could not save free-text reply (fields missing?): " . $e->getMessage());
+      }
+    }
 
     // If RSVP already recorded, do not process again — just acknowledge silently.
     // This prevents the reply loop where every inbound message triggers a new reply.
@@ -166,11 +195,13 @@ class TwilioWebhookController extends ControllerBase {
           break;
 
         default:
-          $reply = $this->personalise(
-            $config->get('rsvp_reply_unknown') ?: 'Hi @name! Please reply YES to confirm or NO to decline.',
-            $name
-          );
-          $this->log("RSVP: unknown intent, sent prompt reply");
+          // Free-text reply that isn't a recognised YES/NO — already saved above
+          // (last_reply_body/last_reply_time) for staff to read and respond to
+          // manually. Do NOT auto-send the "please reply YES or NO" prompt
+          // anymore — that used to fire on every non-yes/no message, which
+          // felt like a bot repeating itself to someone who sent a real question.
+          $reply = '';
+          $this->log("RSVP: unknown intent — no auto-reply sent (message saved for manual reply).");
           break;
       }
     }
@@ -282,6 +313,30 @@ class TwilioWebhookController extends ControllerBase {
 
     if ($logAll) {
       $this->log("STATUS CALLBACK: SID=$messageSid status=$messageStatus");
+    }
+
+    // ── Global blocklist ─────────────────────────────────────────────────
+    // A genuine delivery failure (bad number, blocked us, opted out, etc.)
+    // adds the number so it's skipped on every future send. A failure caused
+    // only by hitting our own platform sending-rate limit does NOT blocklist
+    // the number — that's a "try again later" problem, not a bad number.
+    if (in_array($messageStatus, ['failed', 'undelivered'], TRUE)) {
+      $errorCode   = (string) $request->request->get('ErrorCode', '');
+      $failedPhone = $this->normalisePhone((string) $request->request->get('To', ''));
+
+      if ($failedPhone) {
+        if (InvitationQrService::isRateLimitErrorCode($errorCode)) {
+          $this->qrService->recordObservedRateLimit();
+          $this->log("NOT blocklisting $failedPhone — rate-limit related failure (errorCode=$errorCode status=$messageStatus). Observed ceiling recorded.");
+        }
+        else {
+          $this->qrService->addToBlocklist($failedPhone, 'Twilio delivery failure', $errorCode, $messageStatus);
+          $this->log("BLOCKLIST: added $failedPhone (status=$messageStatus errorCode=$errorCode)");
+        }
+      }
+      else {
+        $this->log("Could not parse 'To' number from failed status callback — not blocklisted. SID=$messageSid");
+      }
     }
 
     // Look up by invitation message SID.
@@ -402,6 +457,49 @@ class TwilioWebhookController extends ControllerBase {
 
   protected function personalise(string $tpl, string $name): string {
     return str_replace(['@name', '{{Guest name}}'], [$name, $name], $tpl);
+  }
+
+  /**
+   * Emails staff when a guest sends a free-text reply that isn't a plain
+   * YES/NO, so a new message doesn't sit unnoticed until someone happens to
+   * open the RSVP Dashboard. Configure the address in Invitation QR Settings
+   * → Notifications. Silently does nothing if no address is configured, or
+   * logs (but never throws) if the mail send itself fails.
+   */
+  protected function notifyStaffOfReply($config, object $submission, string $name, string $phone, string $body): void {
+    $to = trim((string) ($config->get('reply_notification_email') ?: ''));
+    if ($to === '') {
+      return;
+    }
+
+    try {
+      $siteName = \Drupal::config('system.site')->get('name') ?: 'Invitation QR';
+      $params = [
+        'subject' => "New WhatsApp reply from $name ($phone)",
+        'body'    => [
+          "A guest replied with a message that wasn't a plain YES/NO:",
+          '',
+          "Name: $name",
+          "Phone: $phone",
+          "Message: \"$body\"",
+          '',
+          'Reply from the RSVP Dashboard in the admin: ' . \Drupal::request()->getSchemeAndHttpHost() . '/admin/invitation-qr/rsvp/' . ($this->qrService->findParentNode($submission)?->id() ?? ''),
+        ],
+      ];
+      \Drupal::service('plugin.manager.mail')->mail(
+        'invitation_qr',
+        'reply_notification',
+        $to,
+        \Drupal::languageManager()->getDefaultLanguage()->getId(),
+        $params,
+        NULL,
+        TRUE
+      );
+      $this->log("reply notification emailed to $to");
+    }
+    catch (\Throwable $e) {
+      $this->log("could not send reply notification email: " . $e->getMessage());
+    }
   }
 
   protected function incrementReplyCount(object $submission): void {

@@ -66,6 +66,13 @@ class SubmissionsListController extends ControllerBase {
       $this->t('Filter by event name…')
     );
 
+    $build['blocklist_link'] = [
+      '#type'       => 'link',
+      '#title'      => $this->t('🚫 Global Blocklist'),
+      '#url'        => Url::fromRoute('invitation_qr.blocklist'),
+      '#attributes' => ['class' => ['button']],
+    ];
+
     $rows = [];
     foreach ($nodes as $node) {
       $submissions = $this->qrService->getSubmissionsForNode($node->id());
@@ -118,6 +125,174 @@ class SubmissionsListController extends ControllerBase {
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
     return $build;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Global blocklist
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Global (cross-event) list of numbers that had a genuine delivery
+   * failure and are now skipped on every future Twilio send. Numbers that
+   * only ever hit our own sending-rate limit are never added here.
+   */
+  public function blocklist(Request $request): array {
+    $search  = trim($request->query->get('search', ''));
+    $entries = $this->qrService->getBlocklist();
+
+    if ($search !== '') {
+      $needle = strtolower($search);
+      $entries = array_filter($entries, function ($entry) use ($needle) {
+        $hay = strtolower(($entry['phone'] ?? '') . ' ' . ($entry['reason'] ?? '') . ' ' . ($entry['error_code'] ?? '') . ' ' . ($entry['status'] ?? ''));
+        return strpos($hay, $needle) !== FALSE;
+      });
+    }
+
+    $rows = [];
+    foreach ($entries as $entry) {
+      $phone = $entry['phone'] ?? '';
+      $rows[] = [
+        $phone ?: '—',
+        $entry['reason'] ?? '—',
+        $entry['error_code'] ?: '—',
+        $entry['status'] ?: '—',
+        $entry['fail_count'] ?? 1,
+        !empty($entry['first_seen']) ? \Drupal::service('date.formatter')->format((int) $entry['first_seen'], 'short') : '—',
+        !empty($entry['last_seen']) ? \Drupal::service('date.formatter')->format((int) $entry['last_seen'], 'short') : '—',
+        [
+          'data' => [
+            '#type'  => 'html_tag',
+            '#tag'   => 'form',
+            '#attributes' => ['method' => 'post', 'action' => Url::fromRoute('invitation_qr.blocklist_remove')->toString(), 'class' => ['iqr-blocklist-remove-form']],
+            'token' => [
+              '#type' => 'html_tag',
+              '#tag'  => 'input',
+              '#attributes' => ['type' => 'hidden', 'name' => 'form_token', 'value' => \Drupal::csrfToken()->get('iqr-blocklist')],
+            ],
+            'phone' => [
+              '#type' => 'html_tag',
+              '#tag'  => 'input',
+              '#attributes' => ['type' => 'hidden', 'name' => 'phone', 'value' => $phone],
+            ],
+            'submit' => [
+              '#type' => 'html_tag',
+              '#tag'  => 'button',
+              '#attributes' => ['type' => 'submit', 'class' => ['button', 'button--small']],
+              '#value' => $this->t('Unblock'),
+            ],
+          ],
+        ],
+      ];
+    }
+
+    $build = [];
+    $build['back'] = [
+      '#type'       => 'link',
+      '#title'      => $this->t('← Back to All Events'),
+      '#url'        => Url::fromRoute('invitation_qr.all_events'),
+      '#attributes' => ['class' => ['iqr-back-link']],
+    ];
+
+    $build['intro'] = [
+      '#type'  => 'html_tag',
+      '#tag'   => 'p',
+      '#value' => $this->t('Numbers below failed to deliver for a real reason (invalid number, blocked, opted out, etc.) and are now skipped automatically on every future send — single, bulk, or adhoc. Numbers that only ever failed because our own sending rate limit was exceeded are never listed here; those get retried normally.'),
+    ];
+
+    $build['toolbar'] = [
+      '#type'       => 'container',
+      '#attributes' => ['class' => ['iqr-blocklist-toolbar'], 'style' => 'display:flex;gap:1rem;align-items:center;flex-wrap:wrap;'],
+      'search' => $this->buildSearchForm(
+        Url::fromRoute('invitation_qr.blocklist'),
+        $search,
+        $this->t('Search phone, reason, error code…')
+      ),
+      'export' => [
+        '#type'       => 'link',
+        '#title'      => $this->t('⬇ Export CSV'),
+        '#url'        => Url::fromRoute('invitation_qr.blocklist_export', [], ['query' => $search !== '' ? ['search' => $search] : []]),
+        '#attributes' => ['class' => ['button']],
+      ],
+    ];
+
+    $build['table'] = [
+      '#type'   => 'table',
+      '#header' => [
+        $this->t('Phone'),
+        $this->t('Reason'),
+        $this->t('Twilio Error Code'),
+        $this->t('Last Status'),
+        $this->t('Fail Count'),
+        $this->t('First Failed'),
+        $this->t('Last Failed'),
+        $this->t('Action'),
+      ],
+      '#rows'   => $rows,
+      '#empty'  => $this->t('No numbers are blocklisted.'),
+      '#attributes' => ['class' => ['iqr-blocklist-table']],
+    ];
+
+    $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
+    return $build;
+  }
+
+  public function blocklistRemove(Request $request): RedirectResponse {
+    $token = $request->request->get('form_token', '');
+    if (!\Drupal::csrfToken()->validate($token, 'iqr-blocklist')) {
+      $this->messenger()->addError($this->t('Security token invalid — please try again.'));
+      return $this->redirect('invitation_qr.blocklist');
+    }
+
+    $phone = trim($request->request->get('phone', ''));
+    if ($phone) {
+      $this->qrService->removeFromBlocklist($phone);
+      $this->messenger()->addStatus($this->t('@phone removed from the blocklist — it will be included in future sends again.', ['@phone' => $phone]));
+    }
+
+    return $this->redirect('invitation_qr.blocklist');
+  }
+
+  public function blocklistExport(Request $request): StreamedResponse {
+    $search  = trim($request->query->get('search', ''));
+    $entries = $this->qrService->getBlocklist();
+
+    if ($search !== '') {
+      $needle = strtolower($search);
+      $entries = array_filter($entries, function ($entry) use ($needle) {
+        $hay = strtolower(($entry['phone'] ?? '') . ' ' . ($entry['reason'] ?? '') . ' ' . ($entry['error_code'] ?? '') . ' ' . ($entry['status'] ?? ''));
+        return strpos($hay, $needle) !== FALSE;
+      });
+    }
+
+    $headers = ['Phone', 'Reason', 'Twilio Error Code', 'Last Status', 'Fail Count', 'First Failed', 'Last Failed'];
+    $csvRows = [];
+    foreach ($entries as $entry) {
+      $csvRows[] = [
+        $entry['phone']      ?? '',
+        $entry['reason']     ?? '',
+        $entry['error_code'] ?? '',
+        $entry['status']     ?? '',
+        $entry['fail_count'] ?? 1,
+        !empty($entry['first_seen']) ? \Drupal::service('date.formatter')->format((int) $entry['first_seen'], 'custom', 'Y-m-d H:i') : '',
+        !empty($entry['last_seen'])  ? \Drupal::service('date.formatter')->format((int) $entry['last_seen'],  'custom', 'Y-m-d H:i') : '',
+      ];
+    }
+
+    $response = new StreamedResponse(function () use ($headers, $csvRows) {
+      $handle = fopen('php://output', 'w');
+      fwrite($handle, "\xEF\xBB\xBF");
+      fputcsv($handle, $headers);
+      foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+      }
+      fclose($handle);
+    });
+
+    $response->headers->set('Content-Type', 'text/csv; charset=utf-8');
+    $response->headers->set('Content-Disposition', 'attachment; filename="invitation-qr-blocklist.csv"');
+    $response->headers->set('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    return $response;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -234,7 +409,15 @@ class SubmissionsListController extends ControllerBase {
     }
 
     // Buttons visible to all roles with access.
-    $build['actions']['rsvp'] = ['#type'=>'link','#title'=>$this->t('📊 RSVP Dashboard'),'#url'=>Url::fromRoute('invitation_qr.rsvp_dashboard',['node'=>$node->id()]),'#attributes'=>['class'=>['button']]];
+    $unreadReplies = $this->countUnreadReplies($submissions, $node->id());
+    $build['actions']['rsvp'] = [
+      '#type'       => 'link',
+      '#title'      => $unreadReplies > 0
+        ? $this->t('📊 RSVP Dashboard 🔴 @n new', ['@n' => $unreadReplies])
+        : $this->t('📊 RSVP Dashboard'),
+      '#url'        => Url::fromRoute('invitation_qr.rsvp_dashboard', ['node' => $node->id()]),
+      '#attributes' => ['class' => ['button']],
+    ];
 
     // ── Filters ───────────────────────────────────────────────────────────────
     $filterInvSent    = (string) ($request->query->get('inv_sent') ?? '');
@@ -1180,6 +1363,8 @@ class SubmissionsListController extends ControllerBase {
         ));
         return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
       }
+
+      $this->qrService->registerActiveSendBatch($node->id(), 'access', $queued);
     }
 
     // Process next batch of 30 — measure exactly how many were processed.
@@ -1197,7 +1382,7 @@ class SubmissionsListController extends ControllerBase {
 
     if ($remaining > 0) {
       $this->messenger()->addWarning($this->t(
-        'Sent @done of @total access cards. @remaining still queued — click Send Access Cards again to continue. @declined excluded (declined).',
+        'Sent @done of @total access cards. @remaining still queued — click Send Access Cards again to continue, or set up the Auto-Resume URL in Settings so this finishes on its own. @declined excluded (declined).',
         ['@done' => $totalDone, '@total' => $stored, '@remaining' => $remaining, '@declined' => $declined]
       ));
     }
@@ -1205,6 +1390,8 @@ class SubmissionsListController extends ControllerBase {
       \Drupal::state()->delete($stateKey);
       \Drupal::state()->delete($doneKey);
       \Drupal::state()->delete($stateKey . '_declined');
+      $this->qrService->clearActiveSendBatch($node->id(), 'access');
+      $this->qrService->notifySendCampaignComplete($node, 'access', $stored);
       $this->messenger()->addStatus($this->t(
         'All @total access card(s) sent. @declined excluded (RSVP declined).',
         ['@total' => $stored, '@declined' => $declined]
@@ -1276,9 +1463,10 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   public function sendAdhocTwilio(NodeInterface $node, Request $request): RedirectResponse {
-    $config = $this->config('invitation_qr.settings');
-    $phone  = trim($request->request->get('adhoc_phone', ''));
-    $sid    = (int) $request->request->get('adhoc_sid', 0);
+    $config  = $this->config('invitation_qr.settings');
+    $phone   = trim($request->request->get('adhoc_phone', ''));
+    $sid     = (int) $request->request->get('adhoc_sid', 0);
+    $message = trim($request->request->get('adhoc_message', ''));
 
     if (!$phone) {
       $this->messenger()->addError($this->t('Phone number is required.'));
@@ -1298,7 +1486,10 @@ class SubmissionsListController extends ControllerBase {
       }
     }
 
-    $ok = $this->qrService->sendViaTwilio($phone, $name, $cardUrl, $config);
+    // If staff typed a custom message, send that literal text instead of the
+    // configured invitation/access-card template. Leave blank to keep the
+    // old behaviour (template message, optionally with the card attached).
+    $ok = $this->qrService->sendViaTwilio($phone, $name, $cardUrl, $config, $message);
 
     if ($ok) {
       $this->messenger()->addStatus($this->t('Message sent to @phone.', ['@phone' => $phone]));
@@ -1531,6 +1722,8 @@ class SubmissionsListController extends ControllerBase {
         ));
         return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
       }
+
+      $this->qrService->registerActiveSendBatch($node->id(), 'invitation', $queued);
     }
 
     // Process next batch of 30.
@@ -1540,12 +1733,14 @@ class SubmissionsListController extends ControllerBase {
 
     if ($remaining > 0) {
       $this->messenger()->addWarning($this->t(
-        'Sent @done of @total invitations. @remaining still queued — click Send Invitations again to continue.',
+        'Sent @done of @total invitations. @remaining still queued — click Send Invitations again to continue, or set up the Auto-Resume URL in Settings so this finishes on its own.',
         ['@done' => $done, '@total' => $stored, '@remaining' => $remaining]
       ));
     }
     else {
       \Drupal::state()->delete($stateKey);
+      $this->qrService->clearActiveSendBatch($node->id(), 'invitation');
+      $this->qrService->notifySendCampaignComplete($node, 'invitation', $stored);
       $this->messenger()->addStatus($this->t(
         'All @total invitation(s) sent successfully.',
         ['@total' => $stored]
@@ -1599,8 +1794,29 @@ class SubmissionsListController extends ControllerBase {
   // RSVP Dashboard
   // ══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Counts guests whose last free-text reply arrived after this node's RSVP
+   * Dashboard was last opened — drives the "🔴 N new" badge on the guest
+   * list page so a new reply doesn't sit unnoticed.
+   */
+  protected function countUnreadReplies(iterable $submissions, int $nodeId): int {
+    $lastViewed = (int) \Drupal::state()->get('invitation_qr.rsvp_last_viewed_' . $nodeId, 0);
+    $count = 0;
+    foreach ($submissions as $sub) {
+      $d = $sub->getData();
+      $replyTime = (int) ($d['last_reply_time'] ?? 0);
+      if ($replyTime > $lastViewed) {
+        $count++;
+      }
+    }
+    return $count;
+  }
+
   public function rsvpDashboard(NodeInterface $node): array {
     $submissions = $this->qrService->getSubmissionsForNode($node->id());
+
+    // Viewing the dashboard clears the "new reply" badge on the guest list.
+    \Drupal::state()->set('invitation_qr.rsvp_last_viewed_' . $node->id(), \Drupal::time()->getCurrentTime());
 
     $confirmed = $declined = $pending = [];
     foreach ($submissions as $sub) {
@@ -1644,23 +1860,46 @@ class SubmissionsListController extends ControllerBase {
       ];
     }
 
-    $makeTable = function (array $subs, string $caption) {
+    $makeTable = function (array $subs, string $caption) use ($node) {
       $rows = [];
       foreach ($subs as $sub) {
-        $d  = $sub->getData();
-        $ts = $d['rsvp_time'] ?? NULL;
+        $d       = $sub->getData();
+        $ts      = $d['rsvp_time'] ?? NULL;
+        $msgTs   = $d['last_reply_time'] ?? NULL;
+        $msgBody = $d['last_reply_body'] ?? '';
+        $phone   = $d['phone_number'] ?? '';
+
+        $replyCell = '—';
+        if ($msgBody !== '' && $phone !== '') {
+          $replyUrl = Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
+            'query'     => ['reply_phone' => $phone, 'reply_sid' => $sub->id()],
+            'fragment'  => 'iqr-adhoc-reply',
+          ]);
+          $replyCell = [
+            'data' => [
+              '#type'       => 'link',
+              '#title'      => $this->t('↩ Reply'),
+              '#url'        => $replyUrl,
+              '#attributes' => ['class' => ['button', 'button--small']],
+            ],
+          ];
+        }
+
         $rows[] = [
-          $d['name']         ?? '—',
-          $d['phone_number'] ?? '—',
-          $d['email']        ?? '—',
+          $d['name']  ?? '—',
+          $phone      ?: '—',
+          $d['email'] ?? '—',
           $d['rsvp_reply_count'] ?? '0',
           $ts ? \Drupal::service('date.formatter')->format((int)$ts, 'short') : '—',
+          $msgBody !== '' ? $msgBody : '—',
+          $msgTs ? \Drupal::service('date.formatter')->format((int)$msgTs, 'short') : '—',
+          $replyCell,
         ];
       }
       return [
         '#type'       => 'table',
         '#caption'    => $caption,
-        '#header'     => [$this->t('Name'), $this->t('Phone'), $this->t('Email'), $this->t('Replies'), $this->t('Last Reply')],
+        '#header'     => [$this->t('Name'), $this->t('Phone'), $this->t('Email'), $this->t('Replies'), $this->t('Last Reply'), $this->t('Last Free-text Message'), $this->t('Message Time'), $this->t('Action')],
         '#rows'       => $rows,
         '#empty'      => $this->t('None.'),
         '#attributes' => ['class' => ['iqr-submissions-table']],
@@ -2026,7 +2265,13 @@ class SubmissionsListController extends ControllerBase {
    * click or page reload will not add a second item — so this loop runs exactly
    * once per legitimate send action.
    */
-  protected function processSendQueueNow(int $batchSize = 0): void {
+  /**
+   * @param int $batchSize 0 drains the entire queue (single-send buttons).
+   * @param bool $unattended TRUE when called from the Auto-Resume endpoint
+   *   (cronSend()) rather than a logged-in admin clicking a button — skips
+   *   the messenger() warning, since there's no one there to see it.
+   */
+  protected function processSendQueueNow(int $batchSize = 0, bool $unattended = FALSE): int {
     $queue  = \Drupal::queue(InvitationQrService::SEND_QUEUE_NAME);
     $worker = \Drupal::service('plugin.manager.queue_worker')
       ->createInstance(InvitationQrService::SEND_QUEUE_NAME);
@@ -2039,6 +2284,23 @@ class SubmissionsListController extends ControllerBase {
         $worker->processItem($item->data);
         $queue->deleteItem($item);
         $processed++;
+      }
+      catch (\Drupal\Core\Queue\SuspendQueueException $e) {
+        // Daily WhatsApp sending-rate limit reached — stop this run entirely
+        // rather than burning through the rest of the queue. Nothing is
+        // marked as failed; remaining guests (including this one) stay
+        // safely queued. They do NOT send themselves in the background
+        // unless the Auto-Resume URL is configured (Settings → Auto-Resume)
+        // — otherwise the next actual click of Send picks up where this
+        // left off, any time after the 24h window has room again.
+        $queue->releaseItem($item);
+        \Drupal::logger('invitation_qr')->info('Send queue paused — daily WhatsApp sending limit reached for now.');
+        if (!$unattended) {
+          $this->messenger()->addWarning($this->t(
+            'Daily WhatsApp sending limit reached for now — the remaining guests are still safely queued. Click Send again later to continue, or set up the Auto-Resume URL in Settings so this finishes without you needing to come back.'
+          ));
+        }
+        break;
       }
       catch (\Exception $e) {
         $queue->releaseItem($item);
@@ -2053,6 +2315,83 @@ class SubmissionsListController extends ControllerBase {
         $processed++;
       }
     }
+
+    return $processed;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Auto-Resume (unattended sending)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Public, key-protected endpoint a scheduled task can hit periodically
+   * (every few hours) to advance pending sends without anyone clicking
+   * "Send" in the UI. Safe to call as often as you like — if there's
+   * nothing queued, or the daily limit is currently maxed, it's a no-op.
+   *
+   * Not a Drupal cron hook on purpose: this module's queue processing is
+   * deliberately click-triggered only, to avoid silently re-sending to
+   * failed/invalid numbers in the background. This endpoint only ever
+   * advances a batch that a human already started via "Send All" — it
+   * can't create new work on its own.
+   */
+  public function cronSend(Request $request): JsonResponse {
+    $config      = $this->config('invitation_qr.settings');
+    $expectedKey = trim((string) ($config->get('send_cron_key') ?: ''));
+    $givenKey    = trim((string) $request->query->get('key', ''));
+
+    if ($expectedKey === '' || $givenKey === '' || !hash_equals($expectedKey, $givenKey)) {
+      return new JsonResponse(['error' => 'Invalid or missing key.'], 403);
+    }
+
+    $queue  = \Drupal::queue(InvitationQrService::SEND_QUEUE_NAME);
+    $before = $queue->numberOfItems();
+
+    if ($before === 0) {
+      return new JsonResponse(['status' => 'idle', 'remaining' => 0]);
+    }
+
+    // Generous batch — this runs unattended, not from an impatient click.
+    $processed = $this->processSendQueueNow(200, TRUE);
+    $after     = $queue->numberOfItems();
+
+    $completed = [];
+    if ($after === 0) {
+      // The shared send queue just fully drained. Close out and notify
+      // every campaign currently registered as active. This assumes one
+      // campaign runs at a time, which matches how "Send All" is actually
+      // used here — if two events' sends happen to overlap, both would be
+      // reported complete together rather than individually timed.
+      foreach ($this->qrService->getActiveSendBatches() as $batch) {
+        $nodeId = (int) ($batch['node_id'] ?? 0);
+        $type   = (string) ($batch['type'] ?? '');
+        if (!$nodeId || !$type) {
+          continue;
+        }
+
+        $stateKey = $type === 'access'
+          ? 'invitation_qr.send_access_total_' . $nodeId
+          : 'invitation_qr.send_inv_total_' . $nodeId;
+        \Drupal::state()->delete($stateKey);
+        if ($type === 'access') {
+          \Drupal::state()->delete('invitation_qr.send_access_done_' . $nodeId);
+          \Drupal::state()->delete('invitation_qr.send_access_total_' . $nodeId . '_declined');
+        }
+        $this->qrService->clearActiveSendBatch($nodeId, $type);
+
+        $node = $this->entityTypeManager()->getStorage('node')->load($nodeId);
+        $this->qrService->notifySendCampaignComplete($node, $type, (int) ($batch['total'] ?? 0));
+        $completed[] = ['node_id' => $nodeId, 'type' => $type];
+      }
+    }
+
+    return new JsonResponse([
+      'status'    => $after === 0 ? 'completed' : 'in_progress',
+      'before'    => $before,
+      'after'     => $after,
+      'processed' => $processed,
+      'completed' => $completed,
+    ]);
   }
 
   protected function buildFilterSelect(string $name, $label, array $options, ?string $selected): array {
@@ -2107,11 +2446,19 @@ class SubmissionsListController extends ControllerBase {
 
   protected function buildAdhocForm(NodeInterface $node): array {
     $action = Url::fromRoute('invitation_qr.send_adhoc_twilio', ['node' => $node->id()]);
+
+    // Pre-fill from a "↩ Reply" link (e.g. from the RSVP Dashboard's free-text
+    // message column) so staff don't have to copy/paste the phone number.
+    $request     = \Drupal::request();
+    $replyPhone  = trim((string) $request->query->get('reply_phone', ''));
+    $replySid    = trim((string) $request->query->get('reply_sid', ''));
+    $hasPrefill  = $replyPhone !== '';
+
     return [
       '#type'  => 'details',
       '#title' => $this->t('📲 Send to a specific number'),
-      '#open'  => FALSE,
-      '#attributes' => ['class' => ['iqr-adhoc-wrap']],
+      '#open'  => $hasPrefill,
+      '#attributes' => ['class' => ['iqr-adhoc-wrap']] + ($hasPrefill ? ['id' => 'iqr-adhoc-reply'] : []),
       'form' => [
         '#type'  => 'html_tag',
         '#tag'   => 'form',
@@ -2128,7 +2475,7 @@ class SubmissionsListController extends ControllerBase {
           'input'  => [
             '#type'  => 'html_tag',
             '#tag'   => 'input',
-            '#attributes' => ['type'=>'tel','name'=>'adhoc_phone','placeholder'=>'+2348012345678','class'=>['iqr-search-input'],'required'=>TRUE],
+            '#attributes' => ['type'=>'tel','name'=>'adhoc_phone','value'=>$replyPhone,'placeholder'=>'+2348012345678','class'=>['iqr-search-input'],'required'=>TRUE],
           ],
         ],
         'sid_wrap' => [
@@ -2138,7 +2485,17 @@ class SubmissionsListController extends ControllerBase {
           'input'  => [
             '#type'  => 'html_tag',
             '#tag'   => 'input',
-            '#attributes' => ['type'=>'number','name'=>'adhoc_sid','placeholder'=>$this->t('e.g. 46922'),'class'=>['iqr-search-input']],
+            '#attributes' => ['type'=>'number','name'=>'adhoc_sid','value'=>$replySid,'placeholder'=>$this->t('e.g. 46922'),'class'=>['iqr-search-input']],
+          ],
+        ],
+        'message_wrap' => [
+          '#type'  => 'html_tag',
+          '#tag'   => 'label',
+          '#value' => $this->t('Custom message (optional — leave blank to send the default invitation/access-card template instead)'),
+          'input'  => [
+            '#type'  => 'html_tag',
+            '#tag'   => 'textarea',
+            '#attributes' => ['name'=>'adhoc_message','rows'=>3,'placeholder'=>$this->t('e.g. Hi, you are eligible — please go ahead and submit your poem.'),'class'=>['iqr-search-input']],
           ],
         ],
         'submit' => [

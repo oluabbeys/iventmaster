@@ -125,3 +125,12 @@ invitation_qr.settings:
     twilio_webhook_secret:
       type: string
       label: 'Twilio Auth Token for webhook validation'
+    daily_conversation_limit:
+      type: integer
+      label: 'Max new unique WhatsApp conversations per rolling 24h window (0 = unlimited)'
+    send_cron_key:
+      type: string
+      label: 'Secret key for the unattended Auto-Resume send endpoint'
+    reply_notification_email:
+      type: string
+      label: 'Email notified on a free-text reply or a finished send campaign'
