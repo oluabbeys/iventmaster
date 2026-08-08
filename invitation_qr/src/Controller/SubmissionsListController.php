@@ -148,10 +148,19 @@ class SubmissionsListController extends ControllerBase {
       });
     }
 
+    $entries = array_values($entries);
+    $total   = count($entries);
+    $pageSize = 50;
+    $pager    = \Drupal::service('pager.manager')->createPager($total, $pageSize, 0);
+    $page     = $pager->getCurrentPage();
+    $pageEntries = array_slice($entries, $page * $pageSize, $pageSize);
+
     $rows = [];
-    foreach ($entries as $entry) {
-      $phone = $entry['phone'] ?? '';
+    foreach ($pageEntries as $i => $entry) {
+      $serial = ($page * $pageSize) + $i + 1;
+      $phone  = $entry['phone'] ?? '';
       $rows[] = [
+        $serial,
         $phone ?: '—',
         $entry['reason'] ?? '—',
         $entry['error_code'] ?: '—',
@@ -215,9 +224,11 @@ class SubmissionsListController extends ControllerBase {
       ],
     ];
 
+    $pageCount = (int) ceil($total / $pageSize);
     $build['table'] = [
       '#type'   => 'table',
       '#header' => [
+        $this->t('#'),
         $this->t('Phone'),
         $this->t('Reason'),
         $this->t('Twilio Error Code'),
@@ -230,6 +241,21 @@ class SubmissionsListController extends ControllerBase {
       '#rows'   => $rows,
       '#empty'  => $this->t('No numbers are blocklisted.'),
       '#attributes' => ['class' => ['iqr-blocklist-table']],
+    ];
+
+    if ($pageCount > 1) {
+      $build['page_info'] = [
+        '#type'  => 'html_tag',
+        '#tag'   => 'p',
+        '#value' => $this->t('Page @cur of @total (@n total blocked numbers)', ['@cur' => $page + 1, '@total' => $pageCount, '@n' => $total]),
+        '#attributes' => ['class' => ['iqr-page-info']],
+      ];
+    }
+
+    $build['pager'] = [
+      '#type'     => 'pager',
+      '#element'  => 0,
+      '#quantity' => 5,
     ];
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
