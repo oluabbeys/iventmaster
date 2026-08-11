@@ -3,6 +3,7 @@
 namespace Drupal\invitation_qr\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Url;
 use Drupal\invitation_qr\Service\InvitationQrService;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
@@ -482,6 +483,18 @@ class TwilioWebhookController extends ControllerBase {
 
     try {
       $siteName = \Drupal::config('system.site')->get('name') ?: 'Invitation QR';
+      $node     = $this->qrService->findParentNode($submission);
+
+      // Deep-link straight into the pre-filled reply box for this exact guest
+      // — no need to go hunt for them on the dashboard first.
+      $replyUrl = $node
+        ? Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
+            'query'    => ['reply_phone' => $phone, 'reply_sid' => $submission->id()],
+            'fragment' => 'iqr-adhoc-reply',
+            'absolute' => TRUE,
+          ])->toString()
+        : \Drupal::request()->getSchemeAndHttpHost();
+
       $params = [
         'subject' => "New WhatsApp reply from $name ($phone)",
         'body'    => [
@@ -491,7 +504,7 @@ class TwilioWebhookController extends ControllerBase {
           "Phone: $phone",
           "Message: \"$body\"",
           '',
-          'Reply from the RSVP Dashboard in the admin: ' . \Drupal::request()->getSchemeAndHttpHost() . '/admin/invitation-qr/rsvp/' . ($this->qrService->findParentNode($submission)?->id() ?? ''),
+          "Reply to $name directly: $replyUrl",
         ],
       ];
       \Drupal::service('plugin.manager.mail')->mail(
