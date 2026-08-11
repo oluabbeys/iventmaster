@@ -853,7 +853,9 @@ class InvitationQrService {
    * Step 2: Stamped card image via MediaUrl (session now open).
    *
    * Template resolution:
-   *  1. field_invitation_template on node (per-event override).
+   *  1. field_invitation_template_sid on node (per-event override). NOTE: this
+   *     is a separate plain-text field from field_invitation_template, which
+   *     is an unrelated Webform reference field — do not confuse the two.
    *  2. default_invitation_template from module config.
    *  3. First available template (auto-fallback).
    *  4. Free-form fallback (only within existing 24hr session).
@@ -861,9 +863,12 @@ class InvitationQrService {
   public function sendInvitationCard(string $phone, string $guestName, string $cardUrl, object $node, $config, array $submissionData = []): bool {
     $templates = \Drupal\invitation_qr\Controller\TemplateManagerController::getTemplates();
 
-    // Resolve template ID.
-    $templateId = trim($this->getNodeFieldValue($node, 'field_invitation_template'));
-    $this->logger->info('sendInvitationCard: node field_invitation_template="@tid"', ['@tid' => $templateId]);
+    // Resolve template ID. NOTE: field_invitation_template is a Webform
+    // reference field (unrelated to Twilio) — the actual per-node override
+    // lives in field_invitation_template_sid, a plain text field added
+    // specifically for this. Do not point this back at field_invitation_template.
+    $templateId = trim($this->getNodeFieldValue($node, 'field_invitation_template_sid'));
+    $this->logger->info('sendInvitationCard: node field_invitation_template_sid="@tid"', ['@tid' => $templateId]);
 
     if (empty($templateId) || !isset($templates[$templateId])) {
       $templateId = trim((string) ($config->get('default_invitation_template') ?: ''));
@@ -912,13 +917,29 @@ class InvitationQrService {
 
   /**
    * Sends ACCESS CARD (manual only).
+   *
+   * Template resolution (mirrors sendInvitationCard()):
+   *  1. field_access_card_template_sid on node (per-event override).
+   *  2. default_access_template from module config.
+   *  3. First available template (auto-fallback).
+   *  4. Free-form fallback (hardcoded message + attached image — no
+   *     longer a configurable setting).
    */
   public function sendAccessCard(string $phone, string $guestName, string $cardUrl, object $node, $config, array $submissionData = []): bool {
-    $templates  = \Drupal\invitation_qr\Controller\TemplateManagerController::getTemplates();
-    $templateId = trim((string) ($config->get('default_access_template') ?: ''));
+    $templates = \Drupal\invitation_qr\Controller\TemplateManagerController::getTemplates();
+
+    // Resolve template ID.
+    $templateId = trim($this->getNodeFieldValue($node, 'field_access_card_template_sid'));
+    $this->logger->info('sendAccessCard: node field_access_card_template_sid="@tid"', ['@tid' => $templateId]);
+
+    if (empty($templateId) || !isset($templates[$templateId])) {
+      $templateId = trim((string) ($config->get('default_access_template') ?: ''));
+      $this->logger->info('sendAccessCard: using default_access_template="@tid"', ['@tid' => $templateId]);
+    }
 
     if ((empty($templateId) || !isset($templates[$templateId])) && !empty($templates)) {
       $templateId = array_key_first($templates);
+      $this->logger->info('sendAccessCard: auto-picked first template="@tid"', ['@tid' => $templateId]);
     }
 
     $template = $templates[$templateId] ?? NULL;
@@ -934,9 +955,12 @@ class InvitationQrService {
         array_merge($submissionData, ['card_type' => 'access']));
     }
 
-    $messageBody = $config->get('access_card_message')
-      ?: 'Dear {{Guest name}}, please find your access card attached. Present this at the event entrance. 🎟️';
-    $messageBody = str_replace('{{Guest name}}', $guestName, $messageBody);
+    // No Content Template resolved (node override, global default, and
+    // Template Manager are all empty) — this is now a hardcoded last-resort
+    // fallback rather than a configurable setting, since message content is
+    // meant to live entirely in Twilio Content Templates going forward.
+    $messageBody = str_replace('{{Guest name}}', $guestName,
+      'Dear {{Guest name}}, please find your access card attached. Present this at the event entrance. 🎟️');
     return $this->sendViaTwilio($phone, $guestName, $cardUrl, $config, $messageBody,
       array_merge($submissionData, ['card_type' => 'access']));
   }

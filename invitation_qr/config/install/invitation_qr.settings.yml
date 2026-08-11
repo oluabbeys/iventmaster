@@ -23,7 +23,6 @@ twilio_channel: whatsapp
 twilio_message: 'Hello @name, your invitation is ready. Please reply YES to confirm or NO to decline.'
 twilio_message_wedding: "Dear {{Guest name}},\n\nThe {{BRIDE FATHER NAME}} and {{Groom mother name}} families would like to invite you to the traditional wedding of {{Bride NAME}} and {{Groom name}}\n\n📅 *Date:* {{Event Date}}\n📍 *Venue:* {{Event Name}}\n⏰ *Time:* {{Event Time}}\n🔗 *Zoom:* {{Zoom Link}}\n\nWe look forward to celebrating with you! 🎊"
 twilio_message_generic: "Dear {{Guest name}},\n\nYou are cordially invited to *{{Event Name}}*.\n\n📅 *Date:* {{Event Date}}\n📍 *Venue:* {{Event Venue}}\n⏰ *Time:* {{Event Time}}\n🔗 *Zoom:* {{Zoom Link}}\n\nWe look forward to seeing you! 🎊"
-access_card_message: "Dear {{Guest name}}, please find your access card attached. Present this at the event entrance. 🎟️"
 checkin_role: checkin
 rsvp_enabled: false
 rsvp_yes_keywords: 'yes,yeah,yep,coming,confirm,attending,i will,i am coming'

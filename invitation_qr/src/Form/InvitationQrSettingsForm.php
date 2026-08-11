@@ -96,18 +96,13 @@ class InvitationQrSettingsForm extends ConfigFormBase {
     $form['name']['colors']['name_color_b'] = ['#type'=>'number','#title'=>$this->t('B'),'#default_value'=>$c->get('name_color_b')??255,'#min'=>0,'#max'=>255];
 
     // ── Message Templates ─────────────────────────────────────────────────────
+    // Access Card Fallback Message field removed — content is fully managed
+    // via Twilio Content Templates now (per-node template SID overrides), so
+    // this free-text fallback setting no longer serves a purpose.
     $form['messages'] = ['#type' => 'details', '#title' => $this->t('Message Templates'), '#open' => TRUE];
 
     $form['messages']['note'] = [
       '#markup' => '<p>' . $this->t('Message content is managed in <a href="/admin/invitation-qr/templates">Twilio Content Templates</a>. The text you define in Twilio Content Template Builder is what gets sent to guests — the module fills in the variable values (guest name, event details, card image URL) automatically.') . '</p>',
-    ];
-
-    $form['messages']['access_card_message'] = [
-      '#type'          => 'textarea',
-      '#title'         => $this->t('Access Card Fallback Message'),
-      '#default_value' => $c->get('access_card_message') ?: "Dear {{Guest name}}, please find your access card attached. Present this at the event entrance. 🎟️",
-      '#rows'          => 3,
-      '#description'   => $this->t('Used as fallback if no access card Twilio template is configured. Token: {{Guest name}}'),
     ];
 
     // ── Twilio ────────────────────────────────────────────────────────────────
@@ -303,7 +298,6 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ->set('name_color_r',            (int) $form_state->getValue('name_color_r'))
       ->set('name_color_g',            (int) $form_state->getValue('name_color_g'))
       ->set('name_color_b',            (int) $form_state->getValue('name_color_b'))
-      ->set('access_card_message',     $form_state->getValue('access_card_message'))
       ->set('twilio_messaging_service_sid', $form_state->getValue('twilio_messaging_service_sid'))
       ->set('twilio_enabled',          (bool) $form_state->getValue('twilio_enabled'))
       ->set('default_invitation_template', $form_state->getValue('default_invitation_template'))

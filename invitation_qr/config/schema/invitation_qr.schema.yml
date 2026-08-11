@@ -77,9 +77,6 @@ invitation_qr.settings:
     twilio_message_generic:
       type: string
       label: 'Generic event invitation message template'
-    access_card_message:
-      type: string
-      label: 'Access card send message'
     checkin_role:
       type: string
       label: 'Role allowed to check in guests'
