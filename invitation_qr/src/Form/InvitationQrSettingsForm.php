@@ -214,7 +214,7 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       '#type'          => 'checkbox',
       '#title'         => $this->t('Enable RSVP via inbound WhatsApp/SMS replies'),
       '#default_value' => $c->get('rsvp_enabled') ?? FALSE,
-      '#description'   => $this->t('Webhook URL: <code>https://yoursite.com/invitation-qr/twilio-webhook</code>'),
+      '#description'   => $this->t('Only controls automatic YES/NO keyword matching and auto-replies below. Turning this off does NOT stop incoming messages from being captured — every reply is still logged to the guest\'s conversation history, and free-text replies still save to the submission and notify staff, so nothing a guest sends is ever missed even with auto-handling off. Webhook URL: <code>https://yoursite.com/invitation-qr/twilio-webhook</code>'),
     ];
     $form['rsvp']['rsvp_yes_keywords'] = [
       '#type' => 'textfield', '#title' => $this->t('YES keywords (comma-separated)'),

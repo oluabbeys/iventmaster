@@ -93,11 +93,6 @@ class TwilioWebhookController extends ControllerBase {
       return $this->twiml('');
     }
 
-    if (!$config->get('rsvp_enabled')) {
-      $this->log("BLOCKED: RSVP is disabled in settings");
-      return $this->twiml('');
-    }
-
     if (!$phone) {
       $this->log("ABORT: could not parse phone number");
       return $this->twiml('Sorry, we could not process your message. Please contact the organiser.');
@@ -123,21 +118,30 @@ class TwilioWebhookController extends ControllerBase {
     $name = $data['name'] ?? '';
     $this->log("MATCHED: sid={$submission->id()} name=$name");
 
-    // Resolve intent — check ButtonPayload first (most reliable for Quick Reply).
-    $intent = $this->resolveIntent($buttonPayload, $buttonText, $body, $config);
-    $this->log("intent=$intent (buttonPayload=$buttonPayload buttonText=$buttonText body=$body)");
-
     // Log every inbound message (YES/NO taps and free text alike) to the full
     // conversation history so staff can see everything a guest has said, not
-    // just the single most-recent reply.
+    // just the single most-recent reply. This runs regardless of whether
+    // automatic RSVP keyword-matching is enabled below — turning off the
+    // bot's auto-reply shouldn't also blind staff to what guests are saying.
     $historyText = trim($body) !== '' ? $body : trim($buttonText);
     if ($historyText !== '') {
       $this->qrService->logReply($submission, 'in', $historyText, $phone);
     }
 
+    $rsvpEnabled = (bool) $config->get('rsvp_enabled');
+
+    // Resolve intent only when automatic RSVP handling is enabled — otherwise
+    // every inbound message is treated as free text for staff to read and
+    // respond to manually (capture/notification below still runs either way).
+    $intent = $rsvpEnabled
+      ? $this->resolveIntent($buttonPayload, $buttonText, $body, $config)
+      : 'unknown';
+    $this->log("intent=$intent (rsvp_enabled=" . ($rsvpEnabled ? 'true' : 'false') . " buttonPayload=$buttonPayload buttonText=$buttonText body=$body)");
+
     // Free-text reply that isn't a recognised YES/NO — save it so staff can see
     // and respond to it from the admin UI (previously this only went to the
-    // transient log file and was otherwise invisible in Drupal).
+    // transient log file and was otherwise invisible in Drupal). This is also
+    // where every inbound message lands when RSVP auto-handling is disabled.
     if ($intent === 'unknown' && trim($body) !== '') {
       try {
         $this->qrService->saveSubmissionField($submission, 'last_reply_body', $body);
@@ -150,6 +154,14 @@ class TwilioWebhookController extends ControllerBase {
         // just log it and continue with the normal RSVP-prompt flow below.
         $this->log("could not save free-text reply (fields missing?): " . $e->getMessage());
       }
+    }
+
+    if (!$rsvpEnabled) {
+      // Automatic RSVP keyword-matching/auto-reply is off — the message has
+      // already been logged, and (if free text) saved + staff-notified,
+      // above. Stop here rather than touching RSVP state or auto-replying.
+      $this->log("RSVP auto-handling disabled — message captured, no auto-reply sent.");
+      return $this->twiml('');
     }
 
     // If RSVP already recorded, do not process again — just acknowledge silently.
