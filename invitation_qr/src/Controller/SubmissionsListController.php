@@ -2314,12 +2314,14 @@ class SubmissionsListController extends ControllerBase {
       ],
       'message_wrap' => [
         '#type'  => 'html_tag',
-        '#tag'   => 'label',
-        '#value' => $this->t('Reply to @name', ['@name' => $name ?: $phone]),
-        'input'  => [
-          '#type'  => 'html_tag',
-          '#tag'   => 'textarea',
-          '#attributes' => ['name' => 'adhoc_message', 'rows' => 3, 'placeholder' => $this->t('Type a message…'), 'class' => ['iqr-search-input'], 'required' => TRUE],
+        '#tag'   => 'textarea',
+        '#value' => '',
+        '#attributes' => [
+          'name'        => 'adhoc_message',
+          'rows'        => 3,
+          'placeholder' => $this->t('Reply to @name…', ['@name' => $name ?: $phone]),
+          'class'       => ['iqr-search-input'],
+          'required'    => TRUE,
         ],
       ],
       'submit' => [
