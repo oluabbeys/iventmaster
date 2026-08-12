@@ -1916,6 +1916,32 @@ class InvitationQrService {
       ->fetchAll();
   }
 
+  /**
+   * Returns total logged-message counts (inbound + outbound) per submission,
+   * in a single batched query — [sid => count].
+   *
+   * This is deliberately NOT based on the `rsvp_reply_count` submission
+   * field: that field is only incremented for recognised yes/no replies
+   * (see TwilioWebhookController::incrementReplyCount()), so it never moves
+   * for guests who only send free-text messages — which is now the normal
+   * case whenever RSVP auto-handling is turned off. Counting rows in
+   * invitation_qr_replies instead reads from the single source of truth
+   * (every message actually logged by logReply()), so it stays correct
+   * regardless of whether RSVP matching is on.
+   */
+  public function getReplyCounts(array $sids): array {
+    $sids = array_values(array_unique(array_filter(array_map('intval', $sids))));
+    if (!$sids) {
+      return [];
+    }
+    $query = \Drupal::database()->select('invitation_qr_replies', 'r');
+    $query->addField('r', 'sid');
+    $query->addExpression('COUNT(*)', 'cnt');
+    $query->condition('r.sid', $sids, 'IN');
+    $query->groupBy('r.sid');
+    return array_map('intval', $query->execute()->fetchAllKeyed(0, 1));
+  }
+
   // ── QR helpers ─────────────────────────────────────────────────────────────
 
   public function generateToken(string $phone, string $uuid): string {

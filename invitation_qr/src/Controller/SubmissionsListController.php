@@ -1904,13 +1904,17 @@ class SubmissionsListController extends ControllerBase {
 
   /**
    * Maps a sortable column key to a comparable value from a submission's data.
+   *
+   * $replyCount is the real total-message count from getReplyCounts() —
+   * NOT the rsvp_reply_count field, which only tracks yes/no replies and
+   * never moves for free-text-only guests (see getReplyCounts() docblock).
    */
-  protected function rsvpSortValue(array $d, string $key) {
+  protected function rsvpSortValue(array $d, string $key, int $replyCount = 0) {
     switch ($key) {
       case 'name':         return mb_strtolower((string) ($d['name'] ?? ''));
       case 'phone':        return (string) ($d['phone_number'] ?? '');
       case 'email':        return mb_strtolower((string) ($d['email'] ?? ''));
-      case 'replies':      return (int) ($d['rsvp_reply_count'] ?? 0);
+      case 'replies':      return $replyCount;
       case 'rsvp_time':    return (int) ($d['rsvp_time'] ?? 0);
       case 'message':      return mb_strtolower((string) ($d['last_reply_body'] ?? ''));
       case 'message_time': return (int) ($d['last_reply_time'] ?? 0);
@@ -1921,10 +1925,10 @@ class SubmissionsListController extends ControllerBase {
   /**
    * Sorts an array of webform submissions by one of the rsvpSortValue() keys.
    */
-  protected function sortSubmissionsBy(array $subs, string $key, string $order): array {
-    usort($subs, function ($a, $b) use ($key, $order) {
-      $va = $this->rsvpSortValue($a->getData(), $key);
-      $vb = $this->rsvpSortValue($b->getData(), $key);
+  protected function sortSubmissionsBy(array $subs, string $key, string $order, array $replyCounts = []): array {
+    usort($subs, function ($a, $b) use ($key, $order, $replyCounts) {
+      $va = $this->rsvpSortValue($a->getData(), $key, $replyCounts[$a->id()] ?? 0);
+      $vb = $this->rsvpSortValue($b->getData(), $key, $replyCounts[$b->id()] ?? 0);
       if ($va === $vb) {
         return 0;
       }
@@ -2001,9 +2005,17 @@ class SubmissionsListController extends ControllerBase {
       else                    $pending[]   = $sub;
     }
 
-    $confirmed = $this->sortSubmissionsBy($confirmed, $sortKey, $sortOrder);
-    $declined  = $this->sortSubmissionsBy($declined,  $sortKey, $sortOrder);
-    $pending   = $this->sortSubmissionsBy($pending,   $sortKey, $sortOrder);
+    // One batched query for the whole page, keyed by submission id — see
+    // getReplyCounts() docblock for why this replaces rsvp_reply_count as
+    // the source for both the "Replies" column and the History link gate.
+    $replyCounts = $this->qrService->getReplyCounts(array_map(
+      fn ($sub) => $sub->id(),
+      $submissions
+    ));
+
+    $confirmed = $this->sortSubmissionsBy($confirmed, $sortKey, $sortOrder, $replyCounts);
+    $declined  = $this->sortSubmissionsBy($declined,  $sortKey, $sortOrder, $replyCounts);
+    $pending   = $this->sortSubmissionsBy($pending,   $sortKey, $sortOrder, $replyCounts);
 
     $total = count($submissions);
     $build = [];
@@ -2044,7 +2056,7 @@ class SubmissionsListController extends ControllerBase {
       ];
     }
 
-    $makeTable = function (array $subs, string $caption, int $element) use ($node, $request, $sortKey, $sortOrder, $pageSize) {
+    $makeTable = function (array $subs, string $caption, int $element) use ($node, $request, $sortKey, $sortOrder, $pageSize, $replyCounts) {
       $tableTotal   = count($subs);
       $pagerManager = \Drupal::service('pager.manager');
       $pager        = $pagerManager->createPager($tableTotal, $pageSize, $element);
@@ -2060,7 +2072,10 @@ class SubmissionsListController extends ControllerBase {
         $phone   = $d['phone_number'] ?? '';
         $serial  = ($page * $pageSize) + $i + 1;
 
-        $replyCount = (int) ($d['rsvp_reply_count'] ?? 0);
+        // Real total-message count, not rsvp_reply_count — see
+        // getReplyCounts() docblock. This is what actually drives whether
+        // the History link below shows up.
+        $replyCount = $replyCounts[$sub->id()] ?? 0;
 
         $actionLinks = [];
         if ($msgBody !== '' && $phone !== '') {
@@ -2093,7 +2108,7 @@ class SubmissionsListController extends ControllerBase {
           $d['name']  ?? '—',
           $phone      ?: '—',
           $d['email'] ?? '—',
-          $d['rsvp_reply_count'] ?? '0',
+          $replyCount,
           $ts ? \Drupal::service('date.formatter')->format((int)$ts, 'short') : '—',
           $msgBody !== '' ? $msgBody : '—',
           $msgTs ? \Drupal::service('date.formatter')->format((int)$msgTs, 'short') : '—',
