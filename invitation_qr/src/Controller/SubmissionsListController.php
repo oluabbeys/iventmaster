@@ -1261,7 +1261,7 @@ class SubmissionsListController extends ControllerBase {
       return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
     }
 
-    $sent = $failed = $skipped = 0;
+    $sent = $failed = $skipped = $rateLimited = 0;
     $sentNames = [];
     $failedNames = [];
 
@@ -1274,6 +1274,17 @@ class SubmissionsListController extends ControllerBase {
       $phone = $data['phone_number'] ?? '';
 
       if (!$phone) { $skipped++; continue; }
+
+      // This legacy synchronous bulk path never checked the daily WhatsApp
+      // conversation cap at all (unlike the async Send All flow), which is
+      // how real usage kept sailing past the configured/approved tier.
+      // sendViaContentSid()/sendViaTwilio() now enforce the cap themselves
+      // too, but checking here lets the whole batch stop cleanly with an
+      // accurate count instead of quietly racking up "failed" sends.
+      if ($this->qrService->isRateLimitReached($config, $phone)) {
+        $rateLimited++;
+        break;
+      }
 
       if ($messageType === 'reminder') {
         // Send RSVP reminder — free-form message.
@@ -1290,26 +1301,24 @@ class SubmissionsListController extends ControllerBase {
         $ok = $this->qrService->sendViaTwilio($phone, $name, '', $tempConfig);
       }
       else {
-        // Send/resend invitation card.
+        // Send/resend invitation card. No longer requires a stamped card
+        // image — a card-less node sends via its resolved Twilio Content
+        // Template instead (see sendInvitationCard()).
         $fid  = $data['stamped_card_fid'] ?? NULL;
-        if (!$fid) { $skipped++; continue; }
-
-        $file = $this->entityTypeManager()->getStorage('file')->load($fid);
-        if (!$file) { $skipped++; continue; }
+        $cardUrl = '';
+        if ($fid) {
+          $file = $this->entityTypeManager()->getStorage('file')->load($fid);
+          if ($file) {
+            $cardUrl = $this->qrService->getAbsoluteFileUrl($file->getFileUri());
+          }
+        }
 
         $parentNode = $this->qrService->findParentNode($sub);
         $dataWithSid = array_merge($data, ['sid' => (int) $sid]);
 
         $ok = $parentNode
-          ? $this->qrService->sendInvitationCard(
-              $phone, $name,
-              $this->qrService->getAbsoluteFileUrl($file->getFileUri()),
-              $parentNode, $config, $dataWithSid
-            )
-          : $this->qrService->sendViaTwilio($phone, $name,
-              $this->qrService->getAbsoluteFileUrl($file->getFileUri()),
-              $config
-            );
+          ? $this->qrService->sendInvitationCard($phone, $name, $cardUrl, $parentNode, $config, $dataWithSid)
+          : $this->qrService->sendViaTwilio($phone, $name, $cardUrl, $config);
 
         if ($ok) {
           $this->qrService->saveSubmissionField($sub, 'twilio_sent', 'yes');
@@ -1346,7 +1355,12 @@ class SubmissionsListController extends ControllerBase {
     }
     if ($skipped > 0) {
       $this->messenger()->addWarning($this->t(
-        '@count skipped (missing card or phone number).', ['@count' => $skipped]
+        '@count skipped (missing phone number).', ['@count' => $skipped]
+      ));
+    }
+    if ($rateLimited > 0) {
+      $this->messenger()->addWarning($this->t(
+        'Stopped early — daily WhatsApp conversation cap reached. The remaining selected guest(s) were not messaged; try again once the rolling 24h window has room, or check the observed rate limit in Settings.'
       ));
     }
 

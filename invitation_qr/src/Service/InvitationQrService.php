@@ -1052,6 +1052,16 @@ class InvitationQrService {
       return FALSE;
     }
 
+    // Enforce the daily conversation cap HERE, at the lowest common send
+    // layer, rather than trusting every caller to check isRateLimitReached()
+    // first — sendBulkTwilio()'s legacy synchronous path and sendAdhocTwilio()
+    // were calling straight through with no pre-check at all, which is how
+    // the real Twilio tier limit kept getting blown through.
+    if ($this->isRateLimitReached($config, $phone)) {
+      $this->logger->warning('Skipping ContentSid send to @phone — daily WhatsApp conversation cap reached.', ['@phone' => $phone]);
+      return FALSE;
+    }
+
     $toNumber    = $channel === 'whatsapp' ? 'whatsapp:' . $phone : $phone;
     $callbackUrl = \Drupal::request()->getSchemeAndHttpHost() . '/invitation-qr/twilio-webhook';
 
@@ -1241,6 +1251,17 @@ class InvitationQrService {
       return FALSE;
     }
 
+    // Same daily-cap enforcement as sendViaContentSid() — this legacy
+    // free-form path is reachable directly from RSVP reminders, ad-hoc
+    // messages, and the no-template fallback, none of which previously
+    // checked the limit or counted toward it (see recordConversationOpened()
+    // call added below). That gap is why real usage could sail past the
+    // configured/observed WhatsApp tier ceiling.
+    if ($this->isRateLimitReached($config, $phone)) {
+      $this->logger->warning('Skipping send to @phone — daily WhatsApp conversation cap reached.', ['@phone' => $phone]);
+      return FALSE;
+    }
+
     $toNumber    = $channel === 'whatsapp' ? 'whatsapp:' . $phone : $phone;
     $fromNumber  = $channel === 'whatsapp' ? 'whatsapp:' . $from  : $from;
     $callbackUrl = \Drupal::request()->getSchemeAndHttpHost() . '/invitation-qr/twilio-webhook';
@@ -1284,6 +1305,11 @@ class InvitationQrService {
         '@phone' => $phone,
         '@sid'   => $messageSid,
       ]);
+      // This was previously ONLY called from sendViaContentSid(), so any
+      // send that went through this legacy free-form path (RSVP reminders,
+      // ad-hoc messages, no-template fallback) opened a real WhatsApp
+      // conversation without ever counting toward the daily cap.
+      $this->recordConversationOpened($phone);
       // Save Message SID for status callback matching.
       if ($messageSid && !empty($submissionData['sid'])) {
         $sub = $this->entityTypeManager->getStorage('webform_submission')->load((int) $submissionData['sid']);

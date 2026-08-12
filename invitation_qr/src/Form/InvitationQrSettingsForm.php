@@ -169,23 +169,6 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       '#description'   => $this->t('Max NEW unique WhatsApp conversations to open per rolling 24h window — match your actual approved tier (Tier 1 = 250, Tier 2 = 1,000, Tier 3 = 10,000; check Meta Business Manager → WhatsApp Manager for your current tier — tiers can go up automatically as your quality/volume grows, so revisit this number occasionally). Bulk sends pause automatically once this is hit; they resume the next time you click Send, or on their own if you\'ve set up the Auto-Resume URL below. Set to 0 to disable throttling.'),
     ];
 
-    $qrService     = \Drupal::service('invitation_qr.qr_service');
-    $observedLimit = $qrService->getObservedRateLimit();
-    if ($observedLimit) {
-      $observedWhen = \Drupal::service('date.formatter')->format((int) $observedLimit['time'], 'short');
-      $form['twilio']['observed_limit_info'] = [
-        '#markup' => '<p><strong>' . $this->t('⚠ Twilio actually rejected a send with a rate-limit error on @when — the real ceiling right now is @n, which is being used instead of the configured number above (whichever is lower). This self-corrects and expires after 30 days, or clear it below once you\'ve confirmed a tier change.', [
-          '@when' => $observedWhen,
-          '@n'    => $observedLimit['value'],
-        ]) . '</strong></p>',
-      ];
-      $form['twilio']['reset_observed_rate_limit'] = [
-        '#type'  => 'checkbox',
-        '#title' => $this->t('Clear the learned rate limit now (check this after confirming your WhatsApp tier increased)'),
-        '#default_value' => FALSE,
-      ];
-    }
-
     // ── Auto-Resume (unattended sending) ───────────────────────────────────────
     $form['autoresume'] = ['#type' => 'details', '#title' => $this->t('Auto-Resume (unattended sending)'), '#open' => FALSE];
     $cronKey = $c->get('send_cron_key') ?: bin2hex(random_bytes(16));
@@ -319,11 +302,6 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ->set('rsvp_reminder_message',   $form_state->getValue('rsvp_reminder_message'))
       ->set('process_realtime',        (bool) $form_state->getValue('process_realtime'))
       ->save();
-
-    if ($form_state->getValue('reset_observed_rate_limit')) {
-      \Drupal::service('invitation_qr.qr_service')->clearObservedRateLimit();
-      $this->messenger()->addStatus($this->t('Learned rate limit cleared — the configured Daily conversation limit will be used on its own again.'));
-    }
 
     parent::submitForm($form, $form_state);
   }
