@@ -331,17 +331,31 @@ class SubmissionsListController extends ControllerBase {
     $submissions = $this->qrService->getSubmissionsForNode($node->id());
     $search      = trim($request->query->get('search', ''));
 
+    $invCardField      = $config->get('invitation_card_field') ?: 'field_invitation_card';
+    $nodeHasInvCardImg = $node->hasField($invCardField) && !$node->get($invCardField)->isEmpty();
+
     $total = count($submissions);
     $stamped = $unstamped = $unsent = $accessReady = $accessUnsent = 0;
     foreach ($submissions as $sub) {
       $d = $sub->getData();
       if (!empty($d['stamped_card_fid'])) {
         $stamped++;
-        if (empty($d['twilio_sent'])) $unsent++;
       }
-      else {
+      elseif ($this->invitationOverlayApplies($d, $nodeHasInvCardImg, $config)) {
+        // Genuinely still needs a name-overlay stamp and doesn't have one.
         $unstamped++;
       }
+      // else: this guest's invitation never needs (and will never get) a
+      // stamped image — not counted in either bucket, since there's
+      // nothing pending for them.
+
+      // Sending is independent of stamping — a guest can be fully sent via
+      // the Twilio Content Template without ever having a stamped_card_fid,
+      // so this must NOT be gated on the stamped branch above.
+      if (empty($d['twilio_sent'])) {
+        $unsent++;
+      }
+
       if (!empty($d['access_card_fid'])) {
         $accessReady++;
         if (empty($d['access_card_sent'])) $accessUnsent++;
@@ -1642,6 +1656,27 @@ class SubmissionsListController extends ControllerBase {
   }
 
   /**
+   * Whether a guest's invitation card would ever actually receive a
+   * per-guest name-overlay stamp (and therefore a stamped_card_fid).
+   * Mirrors the exact condition InvitationQrService::processSubmission()
+   * uses to decide whether to stamp at all: a node with no invitation-card
+   * image, name-overlay turned off globally, or a guest with no name to
+   * overlay, never gets — and never needs — a stamped_card_fid. Sending
+   * still happens for these guests via the resolved Twilio Content
+   * Template (or the raw uploaded card), independent of stamping.
+   *
+   * Treating "no stamped_card_fid" as "still needs stamping" without this
+   * check means such guests get endlessly re-queued as unstamped on every
+   * click of Process Unstamped, and permanently inflate the "Not Stamped"
+   * dashboard count — there's nothing actually pending for them.
+   */
+  protected function invitationOverlayApplies(array $submissionData, bool $nodeHasInvCardImg, $config): bool {
+    return $nodeHasInvCardImg
+      && (bool) $config->get('name_enabled')
+      && !empty($submissionData['name'] ?? '');
+  }
+
+  /**
    * Re-stamps access cards for all guests in a node.
    * Clears access_card_fid so processSubmission() re-stamps with current
    * node access card design and QR position. Never touches invitation card
@@ -1754,7 +1789,8 @@ class SubmissionsListController extends ControllerBase {
         $nodeHasInvCardImg    = $parentNode && $parentNode->hasField($invCardField) && !$parentNode->get($invCardField)->isEmpty();
         $nodeHasAccessCardImg = $parentNode && $parentNode->hasField($accessCardField) && !$parentNode->get($accessCardField)->isEmpty();
 
-        $hasInvCard = !empty($sub->getData()['stamped_card_fid']);
+        $subData = $sub->getData();
+        $hasInvCard = !empty($subData['stamped_card_fid']);
         $hasAccessCard = (bool) $db->select('webform_submission_data', 'w')
           ->fields('w', ['value'])
           ->condition('sid', $sid)
@@ -1762,7 +1798,13 @@ class SubmissionsListController extends ControllerBase {
           ->condition('property', '')->condition('delta', 0)
           ->execute()->fetchField();
 
-        $invNeedsWork    = $nodeHasInvCardImg    && !$hasInvCard;
+        // Only actually needs (re-)queuing when overlay stamping genuinely
+        // applies to this guest and hasn't happened yet — see
+        // invitationOverlayApplies() docblock. Without this, a guest whose
+        // invitation will never get a stamped_card_fid (no overlay needed,
+        // or no name to overlay) gets queued and reprocessed forever,
+        // without ever counting as "done".
+        $invNeedsWork    = $this->invitationOverlayApplies($subData, $nodeHasInvCardImg, $config) && !$hasInvCard;
         $accessNeedsWork = $nodeHasAccessCardImg && !$hasAccessCard;
 
         if ($invNeedsWork || $accessNeedsWork) {
