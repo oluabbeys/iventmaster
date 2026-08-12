@@ -1534,9 +1534,23 @@ class SubmissionsListController extends ControllerBase {
     $sid     = (int) $request->request->get('adhoc_sid', 0);
     $message = trim($request->request->get('adhoc_message', ''));
 
+    // The reply box on a guest's History page posts here too (so staff can
+    // answer without leaving that page) and sets this flag so we send them
+    // back to that same page afterwards instead of the Guest List. This is
+    // deliberately a fixed flag rather than a free-form redirect URL taken
+    // from user input — an arbitrary "destination" field would be an
+    // open-redirect risk. We only ever choose between two routes we build
+    // ourselves, server-side.
+    $returnToHistory = $request->request->get('adhoc_return') === 'history' && $sid;
+    $redirectBack = function () use ($returnToHistory, $node, $sid) {
+      return $returnToHistory
+        ? $this->redirect('invitation_qr.reply_history', ['node' => $node->id(), 'submission' => $sid])
+        : $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+    };
+
     if (!$phone) {
       $this->messenger()->addError($this->t('Phone number is required.'));
-      return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+      return $redirectBack();
     }
 
     $cardUrl = '';
@@ -1593,7 +1607,7 @@ class SubmissionsListController extends ControllerBase {
       $this->messenger()->addError($this->t('Failed to send to @phone — check logs.', ['@phone' => $phone]));
     }
 
-    return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+    return $redirectBack();
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2267,14 +2281,53 @@ class SubmissionsListController extends ControllerBase {
       ];
     }
 
-    $build['reply'] = [
-      '#type'       => 'link',
-      '#title'      => $this->t('↩ Reply to @name', ['@name' => $name ?: $phone]),
-      '#url'        => Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
-        'query'    => ['reply_phone' => $phone, 'reply_sid' => $submission->id()],
-        'fragment' => 'iqr-adhoc-reply',
-      ]),
-      '#attributes' => ['class' => ['button', 'button--primary']],
+    // Inline reply box right on the thread — staff can answer without
+    // leaving this page. Posts to the same send_adhoc_twilio route the
+    // Guest List's "Send to a specific number" box uses, with the phone and
+    // submission ID already filled in (hidden), plus a flag that sends
+    // staff back to this same History page afterwards instead of the Guest
+    // List, so the new message shows up in the thread immediately.
+    $sendAction = Url::fromRoute('invitation_qr.send_adhoc_twilio', ['node' => $node->id()]);
+    $build['reply_form'] = [
+      '#type'  => 'html_tag',
+      '#tag'   => 'form',
+      '#attributes' => ['method' => 'post', 'action' => $sendAction->toString(), 'class' => ['iqr-history-reply-form']],
+      'token_field' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'input',
+        '#attributes' => ['type' => 'hidden', 'name' => 'form_token', 'value' => \Drupal::csrfToken()->get('iqr-adhoc')],
+      ],
+      'phone_field' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'input',
+        '#attributes' => ['type' => 'hidden', 'name' => 'adhoc_phone', 'value' => $phone],
+      ],
+      'sid_field' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'input',
+        '#attributes' => ['type' => 'hidden', 'name' => 'adhoc_sid', 'value' => $submission->id()],
+      ],
+      'return_field' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'input',
+        '#attributes' => ['type' => 'hidden', 'name' => 'adhoc_return', 'value' => 'history'],
+      ],
+      'message_wrap' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'label',
+        '#value' => $this->t('Reply to @name', ['@name' => $name ?: $phone]),
+        'input'  => [
+          '#type'  => 'html_tag',
+          '#tag'   => 'textarea',
+          '#attributes' => ['name' => 'adhoc_message', 'rows' => 3, 'placeholder' => $this->t('Type a message…'), 'class' => ['iqr-search-input'], 'required' => TRUE],
+        ],
+      ],
+      'submit' => [
+        '#type'  => 'html_tag',
+        '#tag'   => 'button',
+        '#attributes' => ['type' => 'submit', 'class' => ['button', 'button--primary']],
+        '#value' => $this->t('Send'),
+      ],
     ];
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
