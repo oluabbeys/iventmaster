@@ -685,6 +685,12 @@ class SubmissionsListController extends ControllerBase {
       $data         = $submission->getData();
       $hasInvFid    = !empty($data['stamped_card_fid']);
       $hasAccessFid = !empty($data['access_card_fid']);
+      // Bare QR fallback — saved for every submission regardless of whether
+      // either card image exists. Lets access-card sending/downloading work
+      // for nodes with no access_card design (older submissions from before
+      // this field existed simply won't have it, which is fine — they fall
+      // back to the "not ready" state below same as before).
+      $hasQrFid     = !empty($data['qr_fid']);
       $checkedIn    = $this->qrService->isCheckedIn($submission);
       $rsvp         = $data['rsvp'] ?? '';
       $rsvpBadge    = match($rsvp) {
@@ -749,18 +755,22 @@ class SubmissionsListController extends ControllerBase {
         if ($filterCheckin === 'no'  &&  $isCheckedIn) continue;
       }
 
-      // Checkbox for bulk select (invitation card).
-      $checkCell = $hasInvFid
-        ? ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','name'=>'sids[]','value'=>$submission->id(),'class'=>['iqr-select-cb']]]]
-        : ['data' => ['#markup' => '—']];
+      // Checkbox for bulk select. Bulk-send (invitation or RSVP reminder)
+      // no longer requires a stamped card image, so selection is available
+      // for every guest, not just ones with a stamped_card_fid.
+      $checkCell = ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','name'=>'sids[]','value'=>$submission->id(),'class'=>['iqr-select-cb']]]];
 
-      // Invitation card download.
+      // Invitation card download — only meaningful if a card was actually
+      // stamped/uploaded; nodes with no invitation_card field have nothing
+      // to download here (the guest still received the invitation via the
+      // Twilio template itself).
       $invDownloadCell = $hasInvFid
         ? ['data' => ['#type'=>'link','#title'=>$this->t('⬇ Inv.'),'#url'=>Url::fromRoute('invitation_qr.download_single',['submission'=>$submission->id()]),'#attributes'=>['class'=>['button','button--small']]]]
         : ['data' => ['#markup' => '<span class="iqr-pending">⏳</span>']];
 
-      // Access card download.
-      $accessDownloadCell = $hasAccessFid
+      // Access card download — falls back to the bare QR code when there's
+      // no access_card image to stamp it onto.
+      $accessDownloadCell = ($hasAccessFid || $hasQrFid)
         ? ['data' => ['#type'=>'link','#title'=>$this->t('⬇ Access'),'#url'=>Url::fromRoute('invitation_qr.download_access_single',['submission'=>$submission->id()]),'#attributes'=>['class'=>['button','button--small']]]]
         : ['data' => ['#markup' => '<span class="iqr-pending">⏳</span>']];
 
@@ -768,9 +778,12 @@ class SubmissionsListController extends ControllerBase {
       // States: unsent → sending (queued, button disabled) → sent
       // Idempotent: clicking again while 'sending' does nothing.
 
-      // Invitation send cell — visible to all with access.
+      // Invitation send cell — visible to all with access. No longer
+      // requires a stamped card image: a node with no invitation_card field
+      // sends via its resolved Twilio Content Template (own approved image,
+      // or text-only) plus the guest-name variable.
       $invSendCell = ['data' => ['#markup' => '—']];
-      if ($twilioEnabled && $hasInvFid) {
+      if ($twilioEnabled) {
         if ($invState === 'sent') {
           $invSendCell = ['data' => ['#type' => 'link',
             '#title'      => $this->t('🔁 Resend Inv.'),
@@ -793,13 +806,13 @@ class SubmissionsListController extends ControllerBase {
           ]];
         }
       }
-      elseif ($twilioEnabled && !$hasInvFid) {
-        $invSendCell = ['data' => ['#markup' => '<span class="iqr-pending">Not ready</span>']];
-      }
 
-      // Access card send cell — visible to all with access.
+      // Access card send cell — visible to all with access. Falls back to
+      // the bare QR code (qr_fid) when there's no access_card image — a
+      // node with no access-card design still needs guests to receive a
+      // scannable QR, it just won't have a branded background.
       $accessSendCell = ['data' => ['#markup' => '—']];
-      if ($twilioEnabled && $hasAccessFid) {
+      if ($twilioEnabled && ($hasAccessFid || $hasQrFid)) {
         // Guest declined — never show send button.
         if (($data['rsvp'] ?? '') === 'no') {
           $accessSendCell = ['data' => ['#markup' => '<span class="iqr-declined" title="Guest declined RSVP — access card blocked.">❌ Declined</span>']];
@@ -828,7 +841,7 @@ class SubmissionsListController extends ControllerBase {
           ]];
         }
       }
-      elseif ($twilioEnabled && !$hasAccessFid) {
+      elseif ($twilioEnabled && !$hasAccessFid && !$hasQrFid) {
         $accessSendCell = ['data' => ['#markup' => '<span class="iqr-pending">Not ready</span>']];
       }
 
@@ -1373,6 +1386,18 @@ class SubmissionsListController extends ControllerBase {
           ->condition('property', '')->condition('delta', 0)
           ->execute()->fetchField();
 
+        // Fall back to the bare QR (qr_fid) when there's no access_card
+        // image to stamp the QR onto — a node with no access-card design
+        // still needs guests to receive a scannable QR.
+        if (!$fid) {
+          $fid = $db->select('webform_submission_data', 'w')
+            ->fields('w', ['value'])
+            ->condition('sid', $sid)
+            ->condition('name', 'qr_fid')
+            ->condition('property', '')->condition('delta', 0)
+            ->execute()->fetchField();
+        }
+
         if (!$fid) { $skipped++; continue; }
 
         $this->qrService->queueAccessCardSend($sid) ? $queued++ : $skipped++;
@@ -1634,9 +1659,21 @@ class SubmissionsListController extends ControllerBase {
       // Clear any stale queue items from a previous incomplete run.
       $queue->deleteQueue();
 
+      // A card-less node (no invitation_card/access_card field value) can
+      // never produce a stamped image — without this check it would show
+      // as perpetually "unstamped" on every click even though there's
+      // nothing left to do for it.
+      $config          = $this->config('invitation_qr.settings');
+      $invCardField    = $config->get('invitation_card_field') ?: 'field_invitation_card';
+      $accessCardField = $config->get('access_card_field') ?: 'field_access_card';
+
       foreach ($submissions as $sub) {
         $sid = (int) $sub->id();
         $db  = \Drupal::database();
+
+        $parentNode = $this->qrService->findParentNode($sub);
+        $nodeHasInvCardImg    = $parentNode && $parentNode->hasField($invCardField) && !$parentNode->get($invCardField)->isEmpty();
+        $nodeHasAccessCardImg = $parentNode && $parentNode->hasField($accessCardField) && !$parentNode->get($accessCardField)->isEmpty();
 
         $hasInvCard = !empty($sub->getData()['stamped_card_fid']);
         $hasAccessCard = (bool) $db->select('webform_submission_data', 'w')
@@ -1646,7 +1683,10 @@ class SubmissionsListController extends ControllerBase {
           ->condition('property', '')->condition('delta', 0)
           ->execute()->fetchField();
 
-        if (!$hasInvCard || !$hasAccessCard) {
+        $invNeedsWork    = $nodeHasInvCardImg    && !$hasInvCard;
+        $accessNeedsWork = $nodeHasAccessCardImg && !$hasAccessCard;
+
+        if ($invNeedsWork || $accessNeedsWork) {
           $this->qrService->queueSubmission($sid);
           $count++;
         }
@@ -1741,8 +1781,10 @@ class SubmissionsListController extends ControllerBase {
       $queue->deleteQueue();
 
       foreach ($submissions as $sub) {
-        $data = $sub->getData();
-        if (empty($data['stamped_card_fid'])) { $skipped++; continue; }
+        // No longer requires a stamped card image — queueInvitationSend()
+        // already validates the phone number and idempotency itself; a
+        // node with no invitation_card field sends via its resolved Twilio
+        // Content Template instead of a stamped image.
         $this->qrService->queueInvitationSend((int) $sub->id()) ? $queued++ : $skipped++;
       }
 
@@ -2308,6 +2350,11 @@ class SubmissionsListController extends ControllerBase {
 
     $data = $sub->getData();
     $fid  = $data['access_card_fid'] ?? NULL;
+    // Fall back to the bare QR when there's no stamped access card — a
+    // node with no access-card design still has a raw scannable QR saved.
+    if (!$fid) {
+      $fid = $data['qr_fid'] ?? NULL;
+    }
     if (!$fid) {
       $this->messenger()->addWarning($this->t('Access card not yet ready.'));
       return $this->redirect('invitation_qr.all_events');
