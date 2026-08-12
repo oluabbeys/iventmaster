@@ -497,12 +497,11 @@ class TwilioWebhookController extends ControllerBase {
       $siteName = \Drupal::config('system.site')->get('name') ?: 'Invitation QR';
       $node     = $this->qrService->findParentNode($submission);
 
-      // Deep-link straight into the pre-filled reply box for this exact guest
-      // — no need to go hunt for them on the dashboard first.
+      // Deep-link straight into this guest's History page, where staff can
+      // see the full conversation thread and reply inline — no need to go
+      // hunt for them on the dashboard first.
       $replyUrl = $node
-        ? Url::fromRoute('invitation_qr.submissions_list', ['node' => $node->id()], [
-            'query'    => ['reply_phone' => $phone, 'reply_sid' => $submission->id()],
-            'fragment' => 'iqr-adhoc-reply',
+        ? Url::fromRoute('invitation_qr.reply_history', ['node' => $node->id(), 'submission' => $submission->id()], [
             'absolute' => TRUE,
           ])->toString()
         : \Drupal::request()->getSchemeAndHttpHost();
