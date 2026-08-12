@@ -619,12 +619,27 @@ class InvitationQrService {
    * Twilio/WhatsApp error codes that mean "our own sending rate was exceeded"
    * rather than "something is wrong with this number". These must NEVER
    * result in a blocklist entry.
+   *
+   * IMPORTANT: only 63018 actually belongs here. Per Twilio's own error
+   * reference:
+   *  - 63018 = sender throughput exceeded (default cap ~80 msg/sec) — a real,
+   *    transient rate issue, safe to treat as "pause and retry".
+   *  - 63032 = "We cannot send this message to this user because of a
+   *    WhatsApp limitation" — a PER-RECIPIENT restriction (that specific
+   *    number is in a WhatsApp experiment blocking delivery to them).
+   *  - 63033 = "Recipient opted out to receive message" — a PER-RECIPIENT
+   *    consent issue (that guest opted out of marketing messages).
+   * 63032 and 63033 have nothing to do with sending rate. Previously
+   * lumping them in here meant a single unlucky recipient hitting either
+   * of them would get misread as "the whole campaign just hit its daily
+   * quota", recording that moment's count as a bogus ceiling that then
+   * blocked every other guest for up to 30 days. They now fall through to
+   * the normal per-number blocklist path instead (same as any other
+   * genuine delivery failure) — skip that one guest, keep sending to
+   * everyone else.
    */
   public static function isRateLimitErrorCode(string $errorCode): bool {
-    // 63018 = WhatsApp per-user/session rate limit exceeded.
-    // 63032 = Concurrent automated messages limit exceeded.
-    // 63033 = Broadcast/rate limit exceeded (Twilio Messaging Service level).
-    return in_array((string) $errorCode, ['63018', '63032', '63033'], TRUE);
+    return in_array((string) $errorCode, ['63018'], TRUE);
   }
 
   public function isBlocklisted(string $phone): bool {
