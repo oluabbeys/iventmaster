@@ -1553,6 +1553,28 @@ class SubmissionsListController extends ControllerBase {
       }
     }
 
+    // The submission-ID field above is optional (it's really only there to
+    // attach a stamped card) and easy to leave blank — e.g. typing straight
+    // into "Send to a specific number" instead of clicking a guest's "↩
+    // Reply" link first. Without a resolved $sub, logReply() below has
+    // nothing to attach the staff's reply to, so it would silently never
+    // show up in that guest's conversation history even though the message
+    // itself sends fine. Fall back to a phone-number match — the same
+    // approach the inbound webhook already uses — so history logging never
+    // silently depends on that field being filled in.
+    if (!$sub && $phone) {
+      $normalizedPhone = preg_replace('/[^0-9+]/', '', $phone);
+      if ($normalizedPhone && !str_starts_with($normalizedPhone, '+')) {
+        $normalizedPhone = '+' . $normalizedPhone;
+      }
+      if ($normalizedPhone) {
+        $sub = $this->qrService->findSubmissionByPhone($normalizedPhone);
+        if ($sub) {
+          $name = $name ?: ($sub->getData()['name'] ?? '');
+        }
+      }
+    }
+
     // If staff typed a custom message, send that literal text instead of the
     // configured invitation/access-card template. Leave blank to keep the
     // old behaviour (template message, optionally with the card attached).

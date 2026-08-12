@@ -1942,6 +1942,55 @@ class InvitationQrService {
     return array_map('intval', $query->execute()->fetchAllKeyed(0, 1));
   }
 
+  /**
+   * Finds a guest's webform submission by phone number, trying a handful of
+   * common formatting variants (with/without +, with/without country code,
+   * last-10-digits) so minor formatting differences between what a guest
+   * typed at signup and what shows up on an inbound/outbound message don't
+   * cause a miss. Mirrors TwilioWebhookController::findSubmissionByPhone()'s
+   * matching logic, exposed here so other callers (e.g. the admin ad-hoc
+   * reply form) can look a guest up by phone too, without requiring a
+   * manually-supplied submission ID.
+   */
+  public function findSubmissionByPhone(string $phone, string $webformId = ''): ?WebformSubmissionInterface {
+    $db     = \Drupal::database();
+    $digits = preg_replace('/[^0-9]/', '', $phone);
+
+    $variants = array_unique(array_filter([
+      $phone,
+      $digits,
+      ltrim($phone, '+'),
+      (str_starts_with($digits, '234') && strlen($digits) === 13)
+        ? '0' . substr($digits, 3) : '',
+      (str_starts_with($digits, '0') && strlen($digits) === 11)
+        ? '+234' . substr($digits, 1) : '',
+      strlen($digits) > 10 ? substr($digits, -10) : '',
+    ]));
+
+    if (!$webformId) {
+      $webformId = $this->configFactory->get('invitation_qr.settings')->get('webform_id') ?: 'invitation_webform';
+    }
+
+    foreach ($variants as $variant) {
+      $sid = $db->select('webform_submission_data', 'wsd')
+        ->fields('wsd', ['sid'])
+        ->condition('wsd.name', 'phone_number')
+        ->condition('wsd.value', '%' . $db->escapeLike($variant) . '%', 'LIKE')
+        ->range(0, 1)
+        ->execute()
+        ->fetchField();
+
+      if ($sid) {
+        $sub = $this->entityTypeManager->getStorage('webform_submission')->load($sid);
+        if ($sub && $sub->getWebform()->id() === $webformId) {
+          return $sub;
+        }
+      }
+    }
+
+    return NULL;
+  }
+
   // ── QR helpers ─────────────────────────────────────────────────────────────
 
   public function generateToken(string $phone, string $uuid): string {
