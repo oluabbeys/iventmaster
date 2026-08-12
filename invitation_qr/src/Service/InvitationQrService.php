@@ -137,6 +137,13 @@ class InvitationQrService {
       $qrDir . '/qr-' . $token . '.png',
       FileSystemInterface::EXISTS_REPLACE
     );
+    $qrFile->setPermanent();
+    $qrFile->save();
+    // Persist the bare QR file id regardless of whether either card image
+    // exists — this is the fallback media for nodes with no access_card
+    // image (send the raw QR itself) and is resolvable via the
+    // 'qr_code_url' token for templates that want it directly.
+    $this->saveSubmissionField($submission, 'qr_fid', $qrFile->id());
 
     // 3. Parent node.
     $node = $this->findParentNode($submission);
@@ -156,78 +163,100 @@ class InvitationQrService {
       ->execute()
       ->fetchField();
 
-    $invCardField = $config->get('invitation_card_field') ?: 'field_invitation_card';
-    if (!$alreadySent && $node->hasField($invCardField) && !$node->get($invCardField)->isEmpty()) {
+    // Stamping (image-dependent) and sending (image-independent) are
+    // deliberately decoupled below. Whether or not this node has an
+    // invitation card image, the guest still gets an invitation — the
+    // Twilio Content Template resolved in sendInvitationCard() carries its
+    // own approved image (or is text-only); the stamped/raw card URL is
+    // only relevant to templates that explicitly reference it as a media
+    // variable, or to the legacy free-form fallback.
+    $invCardField  = $config->get('invitation_card_field') ?: 'field_invitation_card';
+    $invCardUrl    = '';
+    $hasInvCardImg = $node->hasField($invCardField) && !$node->get($invCardField)->isEmpty();
+
+    if (!$alreadySent && $hasInvCardImg) {
       $invCardFile = $node->get($invCardField)->entity;
       if ($invCardFile) {
-        $stampedInvData = $this->stampInvitationCard(
-          $invCardFile->getFileUri(),
-          $data['name'] ?? '',
-          $config
-        );
+        if ($config->get('name_enabled') && !empty($data['name'] ?? '')) {
+          // Name overlay wanted — stamp the guest's name onto the card.
+          $stampedInvData = $this->stampInvitationCard(
+            $invCardFile->getFileUri(),
+            $data['name'] ?? '',
+            $config
+          );
 
-        $stampedDir = 'public://invitation-stamped';
-        $this->fileSystem->prepareDirectory($stampedDir, FileSystemInterface::CREATE_DIRECTORY);
-        // Include timestamp in filename so re-stamps are never served from
-        // browser or CDN cache — each re-stamp produces a unique file URL.
-        // (Mirrors the same fix already applied to access cards below.)
-        $invFilename = 'stamped-inv-' . $token . '-' . time() . '.png';
-        $stampedInvFile = $this->fileRepository->writeData(
-          $stampedInvData,
-          $stampedDir . '/' . $invFilename,
-          FileSystemInterface::EXISTS_REPLACE
-        );
-        $stampedInvFile->setPermanent();
-        $stampedInvFile->save();
-        $this->saveSubmissionField($submission, 'stamped_card_fid', $stampedInvFile->id());
+          $stampedDir = 'public://invitation-stamped';
+          $this->fileSystem->prepareDirectory($stampedDir, FileSystemInterface::CREATE_DIRECTORY);
+          // Include timestamp in filename so re-stamps are never served from
+          // browser or CDN cache — each re-stamp produces a unique file URL.
+          // (Mirrors the same fix already applied to access cards below.)
+          $invFilename = 'stamped-inv-' . $token . '-' . time() . '.png';
+          $stampedInvFile = $this->fileRepository->writeData(
+            $stampedInvData,
+            $stampedDir . '/' . $invFilename,
+            FileSystemInterface::EXISTS_REPLACE
+          );
+          $stampedInvFile->setPermanent();
+          $stampedInvFile->save();
+          $this->saveSubmissionField($submission, 'stamped_card_fid', $stampedInvFile->id());
+          $invCardUrl = $this->getAbsoluteFileUrl($stampedInvFile->getFileUri());
 
-        $this->logger->info('Invitation card stamped for submission @sid.', ['@sid' => $submission->id()]);
-
-        // Auto-send if enabled in settings (checkbox).
-        // Uses the queue-based idempotent send so:
-        //  - State is set to 'sending' before the Twilio call
-        //  - Double-send is blocked if queue runs twice
-        //  - Submissions table shows correct three-state badge
-        //  - Failed sends reset to 'unsent' for manual retry
-        if ($config->get('twilio_enabled')) {
-          $phone = $data['phone_number'] ?? '';
-          if ($phone) {
-            $queued = $this->queueInvitationSend((int) $submission->id());
-            if ($queued) {
-              // Process immediately — we are already inside a queue worker
-              // (stamping queue), so we call sendInvitationCard directly here
-              // rather than nesting a second queue drain.
-              $dataWithSid = array_merge($data, ['sid' => $submission->id()]);
-              $sent = $this->sendInvitationCard(
-                $phone,
-                $data['name'] ?? '',
-                $this->getAbsoluteFileUrl($stampedInvFile->getFileUri()),
-                $node,
-                $config,
-                $dataWithSid
-              );
-              if ($sent) {
-                $this->saveSubmissionField($submission, 'twilio_sent', 'yes');
-                // Clear the sending lock — DB flag is now ground truth.
-                \Drupal::state()->delete($this->invSendStateKey((int) $submission->id()));
-                $this->logger->info('Auto-send: invitation sent for sid=@sid.', ['@sid' => $submission->id()]);
-              }
-              else {
-                // Reset to unsent so admin can retry manually from the table.
-                $this->resetInvSendState((int) $submission->id());
-                $this->logger->error('Auto-send: invitation failed for sid=@sid — reset to unsent.', ['@sid' => $submission->id()]);
-              }
-            }
-            else {
-              // Already sent or sending — skip silently (idempotency).
-              $this->logger->info('Auto-send: skipped for sid=@sid (already sent or in progress).', ['@sid' => $submission->id()]);
-            }
-          }
+          $this->logger->info('Invitation card stamped for submission @sid.', ['@sid' => $submission->id()]);
+        }
+        else {
+          // Card image exists but no per-guest overlay is needed — use the
+          // uploaded card as-is (no stamping required for this node).
+          $invCardUrl = $this->getAbsoluteFileUrl($invCardFile->getFileUri());
         }
       }
     }
     elseif ($alreadySent) {
       $this->logger->info('Invitation card already sent for sid=@sid — skipping re-stamp to preserve original.', ['@sid' => $submission->id()]);
+    }
+
+    // Auto-send if enabled in settings (checkbox) — runs regardless of
+    // whether this node has an invitation card image at all. Nodes with no
+    // card rely entirely on the resolved Twilio Content Template (its own
+    // approved image, or text-only) plus the guest-name variable.
+    // Uses the queue-based idempotent send so:
+    //  - State is set to 'sending' before the Twilio call
+    //  - Double-send is blocked if queue runs twice
+    //  - Submissions table shows correct three-state badge
+    //  - Failed sends reset to 'unsent' for manual retry
+    if (!$alreadySent && $config->get('twilio_enabled')) {
+      $phone = $data['phone_number'] ?? '';
+      if ($phone) {
+        $queued = $this->queueInvitationSend((int) $submission->id());
+        if ($queued) {
+          // Process immediately — we are already inside a queue worker
+          // (stamping queue), so we call sendInvitationCard directly here
+          // rather than nesting a second queue drain.
+          $dataWithSid = array_merge($data, ['sid' => $submission->id()]);
+          $sent = $this->sendInvitationCard(
+            $phone,
+            $data['name'] ?? '',
+            $invCardUrl,
+            $node,
+            $config,
+            $dataWithSid
+          );
+          if ($sent) {
+            $this->saveSubmissionField($submission, 'twilio_sent', 'yes');
+            // Clear the sending lock — DB flag is now ground truth.
+            \Drupal::state()->delete($this->invSendStateKey((int) $submission->id()));
+            $this->logger->info('Auto-send: invitation sent for sid=@sid.', ['@sid' => $submission->id()]);
+          }
+          else {
+            // Reset to unsent so admin can retry manually from the table.
+            $this->resetInvSendState((int) $submission->id());
+            $this->logger->error('Auto-send: invitation failed for sid=@sid — reset to unsent.', ['@sid' => $submission->id()]);
+          }
+        }
+        else {
+          // Already sent or sending — skip silently (idempotency).
+          $this->logger->info('Auto-send: skipped for sid=@sid (already sent or in progress).', ['@sid' => $submission->id()]);
+        }
+      }
     }
 
     // 5. Stamp ACCESS CARD (QR only). Never auto-sent.
@@ -471,6 +500,36 @@ class InvitationQrService {
         }
       }
       $this->logger->warning('stamped_invitation_card_url: no fid found. submissionData keys: @data', [
+        '@data' => json_encode(array_keys($submissionData)),
+      ]);
+      return '';
+    }
+
+    // Bare QR code image — independent of either card. Used as the fallback
+    // media when a node has no access_card image to stamp the QR onto (or
+    // by any template that just wants the raw QR directly).
+    if ($token === 'qr_code_url') {
+      $fid = $submissionData['qr_fid'] ?? NULL;
+      if (!$fid && !empty($submissionData['sid'])) {
+        $fid = \Drupal::database()->select('webform_submission_data', 'w')
+          ->fields('w', ['value'])
+          ->condition('sid', $submissionData['sid'])
+          ->condition('name', 'qr_fid')
+          ->condition('property', '')
+          ->condition('delta', 0)
+          ->execute()
+          ->fetchField();
+      }
+      if ($fid) {
+        $file = \Drupal::entityTypeManager()->getStorage('file')->load((int) $fid);
+        if ($file) {
+          $fullUrl = $this->getAbsoluteFileUrl($file->getFileUri());
+          $baseUrl = \Drupal::request()->getSchemeAndHttpHost();
+          $path    = ltrim(str_replace($baseUrl, '', $fullUrl), '/');
+          return $path;
+        }
+      }
+      $this->logger->warning('qr_code_url: no fid found. submissionData keys: @data', [
         '@data' => json_encode(array_keys($submissionData)),
       ]);
       return '';
@@ -1581,31 +1640,39 @@ class InvitationQrService {
     }
 
     if ($type === 'invitation') {
+      // A stamped/raw card image is no longer a hard requirement — a node
+      // with no invitation_card field relies entirely on its Twilio Content
+      // Template (own approved image, or text-only) plus the guest-name
+      // variable. If a stamped card WAS produced, use it; otherwise send
+      // with an empty card URL and let sendInvitationCard()/sendViaTwilio()
+      // decide (both already tolerate an empty cardUrl).
       $fid = $data['stamped_card_fid'] ?? NULL;
-      if (!$fid) {
-        $this->logger->warning('Send queue: no invitation card fid for sid=@sid.', ['@sid' => $sid]);
-        // Card not ready — reset so admin can retry after stamping.
-        $this->resetInvSendState($sid);
-        return;
+      $cardUrl = '';
+      if ($fid) {
+        $file = $this->entityTypeManager->getStorage('file')->load($fid);
+        if ($file) {
+          $cardUrl = $this->getAbsoluteFileUrl($file->getFileUri());
+        }
+        else {
+          $this->logger->warning('Send queue: invitation card file missing for sid=@sid — sending without card image.', ['@sid' => $sid]);
+        }
       }
-      $file = $this->entityTypeManager->getStorage('file')->load($fid);
-      if (!$file) {
-        $this->logger->error('Send queue: invitation card file missing for sid=@sid.', ['@sid' => $sid]);
-        $this->resetInvSendState($sid);
-        return;
+      else {
+        $this->logger->info('Send queue: no stamped invitation card for sid=@sid — sending via template/text without a card image.', ['@sid' => $sid]);
       }
+
       $dataWithSid = array_merge($data, ['sid' => $sid]);
       $ok = $node
         ? $this->sendInvitationCard(
             $data['phone_number'] ?? '',
             $data['name'] ?? '',
-            $this->getAbsoluteFileUrl($file->getFileUri()),
+            $cardUrl,
             $node, $config, $dataWithSid
           )
         : $this->sendViaTwilio(
             $data['phone_number'] ?? '',
             $data['name'] ?? '',
-            $this->getAbsoluteFileUrl($file->getFileUri()),
+            $cardUrl,
             $config
           );
 
@@ -1626,6 +1693,11 @@ class InvitationQrService {
     }
 
     if ($type === 'access') {
+      // Preferred: a QR-stamped access card image. Fallback: the bare QR
+      // code PNG itself (qr_fid, saved unconditionally in processSubmission
+      // regardless of whether an access_card image exists) — a node with
+      // no access_card field still needs the guest to receive a scannable
+      // QR, it just won't have a branded background.
       $accessFid = \Drupal::database()->select('webform_submission_data', 'w')
         ->fields('w', ['value'])
         ->condition('sid', $sid)
@@ -1633,16 +1705,30 @@ class InvitationQrService {
         ->condition('property', '')->condition('delta', 0)
         ->execute()->fetchField();
 
+      $usedFallbackQr = FALSE;
       if (!$accessFid) {
-        $this->logger->warning('Send queue: no access card fid for sid=@sid.', ['@sid' => $sid]);
+        $accessFid = $data['qr_fid'] ?? \Drupal::database()->select('webform_submission_data', 'w')
+          ->fields('w', ['value'])
+          ->condition('sid', $sid)
+          ->condition('name', 'qr_fid')
+          ->condition('property', '')->condition('delta', 0)
+          ->execute()->fetchField();
+        $usedFallbackQr = TRUE;
+      }
+
+      if (!$accessFid) {
+        $this->logger->warning('Send queue: no access card or QR fid for sid=@sid.', ['@sid' => $sid]);
         $this->resetAccessSendState($sid);
         return;
       }
       $file = $this->entityTypeManager->getStorage('file')->load((int) $accessFid);
       if (!$file) {
-        $this->logger->error('Send queue: access card file missing for sid=@sid.', ['@sid' => $sid]);
+        $this->logger->error('Send queue: access/QR file missing for sid=@sid.', ['@sid' => $sid]);
         $this->resetAccessSendState($sid);
         return;
+      }
+      if ($usedFallbackQr) {
+        $this->logger->info('Send queue: no access card image for sid=@sid — sending bare QR code instead.', ['@sid' => $sid]);
       }
       $dataWithSid = array_merge($data, ['sid' => $sid]);
       $ok = $node
