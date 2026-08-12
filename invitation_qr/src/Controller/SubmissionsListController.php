@@ -1376,6 +1376,7 @@ class SubmissionsListController extends ControllerBase {
     $stateKey = 'invitation_qr.send_access_total_' . $node->id();
     $doneKey  = 'invitation_qr.send_access_done_' . $node->id();
     $stored   = \Drupal::state()->get($stateKey, 0);
+    $stored   = $this->clearStaleBatchState($stored, $queue, [$stateKey, $doneKey, $stateKey . '_declined']);
 
     // Only queue if no send batch is already in progress.
     if ($stored === 0) {
@@ -1615,6 +1616,32 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Guards against stale "batch in progress" state left behind by an
+   * abandoned/interrupted run, or a queue that got cleared (deploy, cache
+   * rebuild, drush updb, etc.) without its matching State entries being
+   * cleared alongside it. Every batch action below (restamp, process
+   * unstamped, generate all, send all invitations/access cards) persists a
+   * "total queued" count in State and only re-scans the guest list when
+   * that count is 0 — otherwise it assumes a run is already in progress
+   * and just keeps draining the existing queue. If that stored count is
+   * stale (> 0) while the actual queue is empty, that assumption is wrong:
+   * the code would skip re-scanning, process zero items, and still report
+   * a "done" message using the stale stored total — exactly as if
+   * everything had already been handled, even though nothing in this run
+   * actually happened. Trusting the queue's real item count instead of a
+   * separately-persisted counter avoids that silent no-op.
+   */
+  protected function clearStaleBatchState(int $storedTotal, \Drupal\Core\Queue\QueueInterface $queue, array $stateKeys): int {
+    if ($storedTotal > 0 && $queue->numberOfItems() === 0) {
+      foreach ($stateKeys as $key) {
+        \Drupal::state()->delete($key);
+      }
+      return 0;
+    }
+    return $storedTotal;
+  }
+
+  /**
    * Re-stamps access cards for all guests in a node.
    * Clears access_card_fid so processSubmission() re-stamps with current
    * node access card design and QR position. Never touches invitation card
@@ -1624,6 +1651,7 @@ class SubmissionsListController extends ControllerBase {
     $queue       = \Drupal::queue(InvitationQrService::QUEUE_NAME);
     $stateKey    = 'invitation_qr.restamp_total_' . $node->id();
     $storedTotal = \Drupal::state()->get($stateKey, 0);
+    $storedTotal = $this->clearStaleBatchState($storedTotal, $queue, [$stateKey]);
 
     // Only clear DB flags and re-queue if no restamp is in progress.
     if ($storedTotal === 0) {
@@ -1700,6 +1728,7 @@ class SubmissionsListController extends ControllerBase {
     $stateKey    = 'invitation_qr.unstamped_total_' . $node->id();
     $doneKey     = 'invitation_qr.unstamped_done_' . $node->id();
     $storedTotal = \Drupal::state()->get($stateKey, 0);
+    $storedTotal = $this->clearStaleBatchState($storedTotal, $queue, [$stateKey, $doneKey]);
 
     // Only scan and queue on the FIRST click — subsequent clicks just process.
     if ($storedTotal === 0) {
@@ -1783,6 +1812,7 @@ class SubmissionsListController extends ControllerBase {
     $stateKey    = 'invitation_qr.genall_total_' . $node->id();
     $doneKey     = 'invitation_qr.genall_done_' . $node->id();
     $storedTotal = \Drupal::state()->get($stateKey, 0);
+    $storedTotal = $this->clearStaleBatchState($storedTotal, $queue, [$stateKey, $doneKey]);
 
     if ($storedTotal === 0) {
       $queue->deleteQueue();
@@ -1821,6 +1851,7 @@ class SubmissionsListController extends ControllerBase {
     $queue    = \Drupal::queue(InvitationQrService::SEND_QUEUE_NAME);
     $stateKey = 'invitation_qr.send_inv_total_' . $node->id();
     $stored   = \Drupal::state()->get($stateKey, 0);
+    $stored   = $this->clearStaleBatchState($stored, $queue, [$stateKey]);
 
     // Only queue if no send batch is already in progress.
     if ($stored === 0) {
