@@ -59,8 +59,8 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ],
       '#default_value' => $c->get('qr_position') ?: 'bottom-right',
     ];
-    $form['qr']['qr_size']   = ['#type'=>'number','#title'=>$this->t('QR Size (px)'),'#default_value'=>$c->get('qr_size')?: 150,'#min'=>50,'#max'=>500];
-    $form['qr']['qr_margin'] = ['#type'=>'number','#title'=>$this->t('QR Margin (px)'),'#default_value'=>$c->get('qr_margin')?: 20,'#min'=>0,'#max'=>200];
+    $form['qr']['qr_size']   = ['#type'=>'number','#title'=>$this->t('QR Size (px)'),'#description'=>$this->t('The QR code is pasted onto the access card at this pixel size — raise this if the card image itself is high-resolution and the QR looks small relative to it.'),'#default_value'=>$c->get('qr_size')?: 150,'#min'=>50,'#max'=>2000];
+    $form['qr']['qr_margin'] = ['#type'=>'number','#title'=>$this->t('QR Margin (px)'),'#default_value'=>$c->get('qr_margin')?: 20,'#min'=>0,'#max'=>500];
 
     // ── Name overlay (on invitation card) ─────────────────────────────────────
     $form['name'] = ['#type' => 'details', '#title' => $this->t('Guest Name Overlay (Invitation Card)'), '#open' => TRUE];
