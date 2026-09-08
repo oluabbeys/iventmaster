@@ -2013,10 +2013,14 @@ class InvitationQrService {
   }
 
   public function generateQrPng(string $content, int $size = 150): string {
-    // endroid/qr-code 5.x replaced the old named-constructor-argument Builder
-    // with a fluent method-chain API (Builder::create()->writer(...)->...->build()).
-    // The constructor itself now takes zero arguments.
-    $result = Builder::create()
+    // endroid/qr-code's fluent Builder API (Builder::create()->writer(...)->...->build())
+    // has shifted between major versions: some releases expose a static
+    // Builder::create() factory, others only allow direct instantiation via
+    // `new Builder()` (the fluent instance methods themselves are unchanged
+    // across these versions). Detect which is available so this keeps working
+    // regardless of which endroid/qr-code version is installed on a given site.
+    $builder = method_exists(Builder::class, 'create') ? Builder::create() : new Builder();
+    $result = $builder
       ->writer(new PngWriter())
       ->data($content)
       ->encoding(new Encoding('UTF-8'))
