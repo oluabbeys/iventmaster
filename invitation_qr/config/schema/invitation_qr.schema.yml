@@ -23,6 +23,12 @@ invitation_qr.settings:
     qr_margin:
       type: integer
       label: 'QR Stamp Margin from edges in pixels'
+    qr_offset_x:
+      type: integer
+      label: 'QR fine-tune X offset in pixels'
+    qr_offset_y:
+      type: integer
+      label: 'QR fine-tune Y offset in pixels'
     process_realtime:
       type: boolean
       label: 'Process QR immediately on submission'

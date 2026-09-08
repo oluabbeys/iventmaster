@@ -282,7 +282,9 @@ class InvitationQrService {
           $accessCardFile->getFileUri(),
           $qrFile->getFileUri(),
           $config->get('qr_position') ?: 'bottom-right',
-          (int) ($config->get('qr_margin') ?: 20)
+          (int) ($config->get('qr_margin') ?: 20),
+          (int) ($config->get('qr_offset_x') ?? 0),
+          (int) ($config->get('qr_offset_y') ?? 0)
         );
 
         $accessDir  = 'public://invitation-access-cards';
@@ -340,7 +342,7 @@ class InvitationQrService {
     return $pngData;
   }
 
-  public function stampAccessCard(string $cardUri, string $qrUri, string $qrPosition, int $qrMargin): string {
+  public function stampAccessCard(string $cardUri, string $qrUri, string $qrPosition, int $qrMargin, int $qrOffsetX = 0, int $qrOffsetY = 0): string {
     $cardPath = $this->fileSystem->realpath($cardUri);
     $qrPath   = $this->fileSystem->realpath($qrUri);
 
@@ -366,6 +368,13 @@ class InvitationQrService {
         $qrW = imagesx($qrImg);
         $qrH = imagesy($qrImg);
         [$dx, $dy] = $this->calculatePosition($qrPosition, $cardW, $cardH, $qrW, $qrH, $qrMargin);
+        // Fine-tune nudge on top of the anchor preset (positive X moves
+        // right, positive Y moves down), independent of qrMargin — lets the
+        // QR be nudged off dead-center (or off a corner) without having to
+        // fight the anchor math itself. Clamp so the QR can never be pushed
+        // fully off the card.
+        $dx = max(0, min($cardW - $qrW, $dx + $qrOffsetX));
+        $dy = max(0, min($cardH - $qrH, $dy + $qrOffsetY));
         imagecopy($cardImg, $qrImg, $dx, $dy, 0, 0, $qrW, $qrH);
         imagedestroy($qrImg);
       }

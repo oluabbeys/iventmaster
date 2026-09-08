@@ -60,7 +60,10 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       '#default_value' => $c->get('qr_position') ?: 'bottom-right',
     ];
     $form['qr']['qr_size']   = ['#type'=>'number','#title'=>$this->t('QR Size (px)'),'#description'=>$this->t('The QR code is pasted onto the access card at this pixel size — raise this if the card image itself is high-resolution and the QR looks small relative to it.'),'#default_value'=>$c->get('qr_size')?: 150,'#min'=>50,'#max'=>2000];
-    $form['qr']['qr_margin'] = ['#type'=>'number','#title'=>$this->t('QR Margin (px)'),'#default_value'=>$c->get('qr_margin')?: 20,'#min'=>0,'#max'=>500];
+    $form['qr']['qr_margin'] = ['#type'=>'number','#title'=>$this->t('QR Margin (px)'),'#description'=>$this->t('Distance from the card edges used by the corner position presets (ignored when position is Center).'),'#default_value'=>$c->get('qr_margin')?: 20,'#min'=>0,'#max'=>500];
+    $form['qr']['offsets'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:16px;']];
+    $form['qr']['offsets']['qr_offset_x'] = ['#type'=>'number','#title'=>$this->t('QR X Offset (px)'),'#description'=>$this->t('Fine-tune nudge left(-)/right(+) on top of the position above.'),'#default_value'=>$c->get('qr_offset_x')??0];
+    $form['qr']['offsets']['qr_offset_y'] = ['#type'=>'number','#title'=>$this->t('QR Y Offset (px)'),'#description'=>$this->t('Fine-tune nudge up(-)/down(+) on top of the position above.'),'#default_value'=>$c->get('qr_offset_y')??0];
 
     // ── Name overlay (on invitation card) ─────────────────────────────────────
     $form['name'] = ['#type' => 'details', '#title' => $this->t('Guest Name Overlay (Invitation Card)'), '#open' => TRUE];
@@ -272,6 +275,8 @@ class InvitationQrSettingsForm extends ConfigFormBase {
       ->set('qr_position',             $form_state->getValue('qr_position'))
       ->set('qr_size',                 (int) $form_state->getValue('qr_size'))
       ->set('qr_margin',               (int) $form_state->getValue('qr_margin'))
+      ->set('qr_offset_x',             (int) $form_state->getValue('qr_offset_x'))
+      ->set('qr_offset_y',             (int) $form_state->getValue('qr_offset_y'))
       ->set('name_enabled',            (bool) $form_state->getValue('name_enabled'))
       ->set('name_font_path',          $form_state->getValue('name_font_path'))
       ->set('name_font_size',          (int) $form_state->getValue('name_font_size'))

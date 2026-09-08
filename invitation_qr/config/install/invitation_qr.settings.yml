@@ -5,6 +5,8 @@ access_card_field: field_access_card
 qr_position: bottom-right
 qr_size: 150
 qr_margin: 20
+qr_offset_x: 0
+qr_offset_y: 0
 process_realtime: false
 name_enabled: true
 name_font_path: ''
