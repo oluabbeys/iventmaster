@@ -2013,22 +2013,70 @@ class InvitationQrService {
   }
 
   public function generateQrPng(string $content, int $size = 150): string {
-    // endroid/qr-code's fluent Builder API (Builder::create()->writer(...)->...->build())
-    // has shifted between major versions: some releases expose a static
-    // Builder::create() factory, others only allow direct instantiation via
-    // `new Builder()` (the fluent instance methods themselves are unchanged
-    // across these versions). Detect which is available so this keeps working
-    // regardless of which endroid/qr-code version is installed on a given site.
-    $builder = method_exists(Builder::class, 'create') ? Builder::create() : new Builder();
-    $result = $builder
-      ->writer(new PngWriter())
-      ->data($content)
-      ->encoding(new Encoding('UTF-8'))
-      ->errorCorrectionLevel(ErrorCorrectionLevel::High)
-      ->size($size)
-      ->margin(10)
-      ->roundBlockSizeMode(RoundBlockSizeMode::Margin)
-      ->build();
+    // endroid/qr-code's Builder API is NOT consistent across the versions
+    // that end up installed on different sites:
+    //  - some releases expose a fluent method-chain API:
+    //      Builder::create()->writer(...)->data(...)->...->build()
+    //  - others only support configuring everything via named constructor
+    //    arguments instead:
+    //      new Builder(writer: ..., data: ..., ...)->build()
+    // Detect which shape is actually available at runtime — via
+    // method_exists()/reflection — rather than assuming a specific
+    // installed version, so QR generation keeps working regardless of
+    // which endroid/qr-code release a given site has installed.
+    if (method_exists(Builder::class, 'writer')) {
+      // Fluent method-chain API.
+      $builder = method_exists(Builder::class, 'create') ? Builder::create() : new Builder();
+      $result = $builder
+        ->writer(new PngWriter())
+        ->data($content)
+        ->encoding(new Encoding('UTF-8'))
+        ->errorCorrectionLevel(ErrorCorrectionLevel::High)
+        ->size($size)
+        ->margin(10)
+        ->roundBlockSizeMode(RoundBlockSizeMode::Margin)
+        ->build();
+    }
+    else {
+      // Named-constructor-argument API. Only pass the arguments the
+      // installed constructor actually declares, so this degrades
+      // gracefully if a given release's parameter set differs slightly.
+      $available = [];
+      try {
+        foreach ((new \ReflectionMethod(Builder::class, '__construct'))->getParameters() as $param) {
+          $available[$param->getName()] = TRUE;
+        }
+      }
+      catch (\ReflectionException $e) {
+        $available = [];
+      }
+
+      $args = [];
+      if (isset($available['writer'])) {
+        $args['writer'] = new PngWriter();
+      }
+      if (isset($available['data'])) {
+        $args['data'] = $content;
+      }
+      if (isset($available['encoding'])) {
+        $args['encoding'] = new Encoding('UTF-8');
+      }
+      if (isset($available['errorCorrectionLevel'])) {
+        $args['errorCorrectionLevel'] = ErrorCorrectionLevel::High;
+      }
+      if (isset($available['size'])) {
+        $args['size'] = $size;
+      }
+      if (isset($available['margin'])) {
+        $args['margin'] = 10;
+      }
+      if (isset($available['roundBlockSizeMode'])) {
+        $args['roundBlockSizeMode'] = RoundBlockSizeMode::Margin;
+      }
+
+      $builder = new Builder(...$args);
+      $result = $builder->build();
+    }
     return $result->getString();
   }
 
