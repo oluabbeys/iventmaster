@@ -339,14 +339,22 @@ class SubmissionsListController extends ControllerBase {
 
     $total = count($submissions);
     $stamped = $unstamped = $unsent = $accessReady = $accessUnsent = $accessUnstamped = 0;
+    // Distinct guests needing ANY processing (invitation stamp, access
+    // stamp, or both) — this is what "Process Unstamped" actually queues,
+    // one item per guest. It must NOT be $unstamped + $accessUnstamped:
+    // that naive sum double-counts every guest missing both stamps, which
+    // can (and does) push the displayed total past the total guest count.
+    $needsProcessing = 0;
     foreach ($submissions as $sub) {
       $d = $sub->getData();
+      $invNeedsThis = FALSE;
       if (!empty($d['stamped_card_fid'])) {
         $stamped++;
       }
       elseif ($this->invitationOverlayApplies($d, $nodeHasInvCardImg, $config)) {
         // Genuinely still needs a name-overlay stamp and doesn't have one.
         $unstamped++;
+        $invNeedsThis = TRUE;
       }
       // else: this guest's invitation never needs (and will never get) a
       // stamped image — not counted in either bucket, since there's
@@ -359,6 +367,7 @@ class SubmissionsListController extends ControllerBase {
         $unsent++;
       }
 
+      $accessNeedsThis = FALSE;
       if (!empty($d['access_card_fid'])) {
         $accessReady++;
         if (empty($d['access_card_sent'])) $accessUnsent++;
@@ -373,6 +382,11 @@ class SubmissionsListController extends ControllerBase {
         // these guests via its own $accessNeedsWork check — this just makes
         // the dashboard/button aware of the same thing.
         $accessUnstamped++;
+        $accessNeedsThis = TRUE;
+      }
+
+      if ($invNeedsThis || $accessNeedsThis) {
+        $needsProcessing++;
       }
     }
 
@@ -436,12 +450,14 @@ class SubmissionsListController extends ControllerBase {
 
     // Admin only buttons.
     if ($canAdminister) {
-      if ($unstamped > 0 || $accessUnstamped > 0) {
+      if ($needsProcessing > 0) {
         // Button covers both — processUnstamped() itself already queues
         // whichever of invitation/access stamping each guest still needs
         // (see $invNeedsWork / $accessNeedsWork there), so one click handles
         // both buckets even though they're shown as separate stat chips.
-        $build['actions']['process'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped',['@n'=>$unstamped + $accessUnstamped]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
+        // Uses $needsProcessing (distinct guests), NOT $unstamped +
+        // $accessUnstamped, which double-counts guests missing both stamps.
+        $build['actions']['process'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped',['@n'=>$needsProcessing]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
       }
       $build['actions']['regen'] = ['#type'=>'link','#title'=>$this->t('🔄 Re-Generate All QRs'),'#url'=>Url::fromRoute('invitation_qr.generate_all',['node'=>$node->id()]),'#attributes'=>['class'=>['button']]];
       if ($twilioEnabled && $unsent > 0) {
