@@ -1072,6 +1072,7 @@ class SubmissionsListController extends ControllerBase {
             <select id="iqr-bulk-type" class="iqr-filter-select">
               <option value="invitation">📩 ' . $this->t('Send/Resend Invitation') . '</option>
               <option value="reminder">🔔 ' . $this->t('RSVP Reminder') . '</option>
+              <option value="access_card">🎟️ ' . $this->t('Send/Resend Access Card') . '</option>
             </select>
           </label>
           <button type="button" class="button button--primary" id="iqr-bulk-send-btn"
@@ -1183,7 +1184,7 @@ class SubmissionsListController extends ControllerBase {
               }
               var typeEl = document.getElementById('iqr-bulk-type');
               var type   = typeEl ? typeEl.value : 'invitation';
-              var label  = type === 'reminder' ? 'RSVP reminder' : 'invitation';
+              var label  = type === 'reminder' ? 'RSVP reminder' : (type === 'access_card' ? 'access card' : 'invitation');
               if (!confirm('Send ' + label + ' to ' + checked.length + ' selected guest(s)?')) {
                 return;
               }
@@ -1273,6 +1274,13 @@ class SubmissionsListController extends ControllerBase {
     if (empty($sids)) {
       $this->messenger()->addWarning($this->t('No guests selected. Please tick the checkboxes next to the guests you want to message.'));
       return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+    }
+
+    // Access cards always go through the send queue (unlike the synchronous
+    // invitation/reminder paths below), so they get their own dedicated
+    // handler rather than being bolted onto this loop's per-item $ok model.
+    if ($messageType === 'access_card') {
+      return $this->sendBulkAccessCards($node, $sids);
     }
 
     $sent = $failed = $skipped = $rateLimited = 0;
@@ -1375,6 +1383,107 @@ class SubmissionsListController extends ControllerBase {
     if ($rateLimited > 0) {
       $this->messenger()->addWarning($this->t(
         'Stopped early — daily WhatsApp conversation cap reached. The remaining selected guest(s) were not messaged; try again once the rolling 24h window has room, or check the observed rate limit in Settings.'
+      ));
+    }
+
+    return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+  }
+
+  /**
+   * Bulk "Send/Resend Access Card" for a set of guests selected from the
+   * bulk action bar. Mirrors sendSingleAccessCard()'s queue-based flow
+   * (RSVP-decline guard, force-resend via resendAccessCard(), then drain
+   * the queue immediately) but batched: every selected guest is queued
+   * first, the queue is drained once for the whole batch, and outcomes are
+   * read back from each guest's send state afterward — unlike the
+   * synchronous invitation/reminder branches above, which know success or
+   * failure immediately from Twilio's response within the loop itself.
+   */
+  protected function sendBulkAccessCards(NodeInterface $node, array $sids): RedirectResponse {
+    $queued = [];
+    $sent = $failed = $skipped = $declined = 0;
+    $sentNames = [];
+    $failedNames = [];
+
+    foreach ($sids as $sid) {
+      $sid = (int) $sid;
+      $sub = $this->entityTypeManager()->getStorage('webform_submission')->load($sid);
+      if (!$sub) { $skipped++; continue; }
+
+      // Block access card send if guest declined RSVP — same guard as the
+      // single-guest Send Access button.
+      $data = $sub->getData();
+      if (($data['rsvp'] ?? '') === 'no') {
+        $declined++;
+        continue;
+      }
+
+      // Force-resend: clears any prior sent/failed state and re-queues,
+      // matching the "Send/Resend Access Card" label — same semantics as
+      // the bulk invitation option above, which also always (re)sends
+      // rather than requiring an explicit resend flag.
+      if ($this->qrService->resendAccessCard($sid)) {
+        $queued[] = $sid;
+      }
+      else {
+        $skipped++;
+      }
+    }
+
+    if (!empty($queued)) {
+      // Process exactly what we just queued — mirrors the fixed-batch-size
+      // pattern used by the other batch-send actions in this controller.
+      $this->processSendQueueNow(count($queued));
+    }
+
+    foreach ($queued as $sid) {
+      $sub  = $this->entityTypeManager()->getStorage('webform_submission')->load($sid);
+      $data = $sub ? $sub->getData() : [];
+      $name  = $data['name'] ?? 'Guest';
+      $phone = $data['phone_number'] ?? '';
+      $state = $this->qrService->getAccessSendState($sid);
+
+      if ($state === 'sent') {
+        $sent++;
+        $sentNames[] = $name . ' (' . $phone . ')';
+      }
+      elseif ($state === 'failed') {
+        $failed++;
+        $failedNames[] = $name . ' (' . $phone . ')';
+      }
+      // else: still 'unsent'/'sending' — the daily WhatsApp cap was hit
+      // mid-batch and this guest's job was safely put back for automatic
+      // retry later (see processSendQueueItem()'s SuspendQueueException
+      // handling), same as the async Send All Access Cards flow.
+    }
+
+    if ($sent > 0) {
+      $this->messenger()->addStatus($this->t(
+        '@count access card(s) sent successfully to: @names',
+        ['@count' => $sent, '@names' => implode(', ', $sentNames)]
+      ));
+    }
+    if ($failed > 0) {
+      $this->messenger()->addError($this->t(
+        '@count failed: @names — check logs for details.',
+        ['@count' => $failed, '@names' => implode(', ', $failedNames)]
+      ));
+    }
+    if ($declined > 0) {
+      $this->messenger()->addWarning($this->t(
+        '@count guest(s) skipped — they declined the invitation.', ['@count' => $declined]
+      ));
+    }
+    if ($skipped > 0) {
+      $this->messenger()->addWarning($this->t(
+        '@count skipped (missing submission, invalid phone, or already in progress).', ['@count' => $skipped]
+      ));
+    }
+    $remaining = count($queued) - $sent - $failed;
+    if ($remaining > 0) {
+      $this->messenger()->addWarning($this->t(
+        '@count guest(s) not yet sent — daily WhatsApp conversation cap reached mid-batch; they were queued for automatic retry.',
+        ['@count' => $remaining]
       ));
     }
 
