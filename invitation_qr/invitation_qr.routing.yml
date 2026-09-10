@@ -89,7 +89,7 @@ invitation_qr.generate_all:
   path: '/admin/invitation-qr/generate-all/{node}'
   defaults:
     _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::generateAll'
-    _title: 'Queue All QR Jobs'
+    _title: 'Re-Generate All Invitations'
   requirements:
     _permission: 'administer invitation qr'
     node: \d+

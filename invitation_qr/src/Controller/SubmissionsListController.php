@@ -447,7 +447,7 @@ class SubmissionsListController extends ControllerBase {
         // independent rather than combined into one button/count.
         $build['actions']['process_access'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped Access Cards',['@n'=>$accessUnstamped]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped_access',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
       }
-      $build['actions']['regen'] = ['#type'=>'link','#title'=>$this->t('🔄 Re-Generate All QRs'),'#url'=>Url::fromRoute('invitation_qr.generate_all',['node'=>$node->id()]),'#attributes'=>['class'=>['button']]];
+      $build['actions']['regen'] = ['#type'=>'link','#title'=>$this->t('🔄 Re-Generate All Invitations'),'#url'=>Url::fromRoute('invitation_qr.generate_all',['node'=>$node->id()]),'#attributes'=>['class'=>['button']]];
       if ($twilioEnabled && $unsent > 0) {
         $build['actions']['send_all'] = ['#type'=>'link','#title'=>$this->t('📲 Send @n Unsent Invitations',['@n'=>$unsent]),'#url'=>Url::fromRoute('invitation_qr.send_all_twilio',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
       }
@@ -2055,6 +2055,18 @@ class SubmissionsListController extends ControllerBase {
     return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
   }
 
+  /**
+   * Re-generates invitation cards for every guest in the node — this is the
+   * invitation-side counterpart to "Re-stamp Access Cards" (use it after
+   * changing the invitation card image or name-overlay settings). It queues
+   * ALL guests unconditionally (no skip for already-stamped), but
+   * processSubmission() itself still only actually re-stamps a guest's
+   * invitation if they haven't been sent yet — once sent, an invitation is
+   * frozen and this never touches it. Access cards are unaffected: this
+   * only backfills a missing access_card_fid, never redoes an existing one
+   * — that's what "Process Unstamped Access Cards" / "Re-stamp Access
+   * Cards" are for.
+   */
   public function generateAll(NodeInterface $node): RedirectResponse {
     $queue       = \Drupal::queue(InvitationQrService::QUEUE_NAME);
     $stateKey    = 'invitation_qr.genall_total_' . $node->id();
@@ -2083,14 +2095,14 @@ class SubmissionsListController extends ControllerBase {
 
     if ($remaining > 0) {
       $this->messenger()->addWarning($this->t(
-        'Processed @done of @total. @remaining still queued — click Re-Generate again to continue.',
+        'Processed @done of @total. @remaining still queued — click Re-Generate All Invitations again to continue.',
         ['@done' => $totalDone, '@total' => $storedTotal, '@remaining' => $remaining]
       ));
     }
     else {
       \Drupal::state()->delete($stateKey);
       \Drupal::state()->delete($doneKey);
-      $this->messenger()->addStatus($this->t('@n QR(s) re-generated.', ['@n' => $storedTotal]));
+      $this->messenger()->addStatus($this->t('@n invitation(s) re-generated. Access cards were not affected.', ['@n' => $storedTotal]));
     }
     return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
   }
