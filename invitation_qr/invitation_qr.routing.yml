@@ -58,6 +58,15 @@ invitation_qr.blocklist_remove:
   requirements:
     _permission: 'administer invitation qr'
 
+invitation_qr.blocklist_bulk_remove:
+  path: '/admin/invitation-qr/blocklist/bulk-remove'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::blocklistBulkRemove'
+    _title: 'Unblock Selected Numbers'
+  methods: [POST]
+  requirements:
+    _permission: 'administer invitation qr'
+
 invitation_qr.submissions_list:
   path: '/admin/invitation-qr/submissions/{node}'
   defaults:

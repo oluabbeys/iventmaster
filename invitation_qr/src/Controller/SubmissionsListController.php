@@ -169,29 +169,11 @@ class SubmissionsListController extends ControllerBase {
         $entry['fail_count'] ?? 1,
         !empty($entry['first_seen']) ? \Drupal::service('date.formatter')->format((int) $entry['first_seen'], 'short') : '—',
         !empty($entry['last_seen']) ? \Drupal::service('date.formatter')->format((int) $entry['last_seen'], 'short') : '—',
-        [
-          'data' => [
-            '#type'  => 'html_tag',
-            '#tag'   => 'form',
-            '#attributes' => ['method' => 'post', 'action' => Url::fromRoute('invitation_qr.blocklist_remove')->toString(), 'class' => ['iqr-blocklist-remove-form']],
-            'token' => [
-              '#type' => 'html_tag',
-              '#tag'  => 'input',
-              '#attributes' => ['type' => 'hidden', 'name' => 'form_token', 'value' => \Drupal::csrfToken()->get('iqr-blocklist')],
-            ],
-            'phone' => [
-              '#type' => 'html_tag',
-              '#tag'  => 'input',
-              '#attributes' => ['type' => 'hidden', 'name' => 'phone', 'value' => $phone],
-            ],
-            'submit' => [
-              '#type' => 'html_tag',
-              '#tag'  => 'button',
-              '#attributes' => ['type' => 'submit', 'class' => ['button', 'button--small']],
-              '#value' => $this->t('Unblock'),
-            ],
-          ],
-        ],
+        // Checkbox for bulk unblock, rather than a per-row form — lets an
+        // admin select a whole group (e.g. everyone blocked for the same
+        // stale reason, or a batch export from CSV) and unblock them in one
+        // submit instead of clicking "Unblock" once per number.
+        ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','name'=>'phones[]','value'=>$phone,'class'=>['iqr-blocklist-cb']]]],
       ];
     }
 
@@ -226,22 +208,64 @@ class SubmissionsListController extends ControllerBase {
     ];
 
     $pageCount = (int) ceil($total / $pageSize);
-    $build['table'] = [
-      '#type'   => 'table',
-      '#header' => [
-        $this->t('#'),
-        $this->t('Phone'),
-        $this->t('Reason'),
-        $this->t('Twilio Error Code'),
-        $this->t('Last Status'),
-        $this->t('Fail Count'),
-        $this->t('First Failed'),
-        $this->t('Last Failed'),
-        $this->t('Action'),
+
+    // Bulk unblock bar — reused above and below the table so it's within
+    // reach on a long (up to 50-row) page without scrolling back up.
+    $bulkBar = function (string $idSuffix) {
+      return [
+        '#type'       => 'container',
+        '#attributes' => ['class' => ['iqr-blocklist-bulk-bar'], 'style' => 'display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin:12px 0;'],
+        'button' . $idSuffix => [
+          '#type'       => 'html_tag',
+          '#tag'        => 'button',
+          '#attributes' => ['type' => 'submit', 'class' => ['button', 'button--primary']],
+          '#value'      => $this->t('🔓 Unblock Selected'),
+        ],
+        'count' . $idSuffix => [
+          '#type'       => 'html_tag',
+          '#tag'        => 'span',
+          '#attributes' => ['class' => ['iqr-blocklist-selected-count', 'iqr-bulk-info']],
+          '#value'      => $this->t('0 selected'),
+        ],
+      ];
+    };
+
+    // The whole table lives inside one form so every checked "phones[]" box
+    // submits together to a single bulk-unblock action — a per-row form
+    // (the old approach) can't be grouped into one submit, since nested
+    // <form> elements aren't valid HTML.
+    $build['blocklist_form'] = [
+      '#type'       => 'html_tag',
+      '#tag'        => 'form',
+      '#attributes' => [
+        'method' => 'post',
+        'action' => Url::fromRoute('invitation_qr.blocklist_bulk_remove', [], ['query' => $search !== '' ? ['search' => $search] : []])->toString(),
+        'id'     => 'iqr-blocklist-bulk-form',
       ],
-      '#rows'   => $rows,
-      '#empty'  => $this->t('No numbers are blocklisted.'),
-      '#attributes' => ['class' => ['iqr-blocklist-table']],
+      'token' => [
+        '#type' => 'html_tag',
+        '#tag'  => 'input',
+        '#attributes' => ['type' => 'hidden', 'name' => 'form_token', 'value' => \Drupal::csrfToken()->get('iqr-blocklist')],
+      ],
+      'bulk_bar_top' => $bulkBar('_top'),
+      'table' => [
+        '#type'   => 'table',
+        '#header' => [
+          $this->t('#'),
+          $this->t('Phone'),
+          $this->t('Reason'),
+          $this->t('Twilio Error Code'),
+          $this->t('Last Status'),
+          $this->t('Fail Count'),
+          $this->t('First Failed'),
+          $this->t('Last Failed'),
+          ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','id'=>'iqr-blocklist-select-all','title'=>$this->t('Select all')]]],
+        ],
+        '#rows'   => $rows,
+        '#empty'  => $this->t('No numbers are blocklisted.'),
+        '#attributes' => ['class' => ['iqr-blocklist-table']],
+      ],
+      'bulk_bar_bottom' => $bulkBar('_bottom'),
     ];
 
     if ($pageCount > 1) {
@@ -260,6 +284,65 @@ class SubmissionsListController extends ControllerBase {
     ];
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
+    $build['#attached']['html_head'][] = [[
+      '#type'       => 'html_tag',
+      '#tag'        => 'script',
+      '#attributes' => [],
+      '#children'   => Markup::create("
+        document.addEventListener('DOMContentLoaded', function() {
+          var form      = document.getElementById('iqr-blocklist-bulk-form');
+          var selectAll = document.getElementById('iqr-blocklist-select-all');
+          var countEls  = document.querySelectorAll('.iqr-blocklist-selected-count');
+
+          function getCheckboxes() {
+            return document.querySelectorAll('input[name=\"phones[]\"]');
+          }
+          function getChecked() {
+            return document.querySelectorAll('input[name=\"phones[]\"]:checked');
+          }
+          function updateCount() {
+            var n = getChecked().length;
+            countEls.forEach(function(el) {
+              el.textContent = n + ' selected';
+              el.classList.toggle('has-selection', n > 0);
+            });
+          }
+
+          if (selectAll) {
+            selectAll.addEventListener('change', function() {
+              getCheckboxes().forEach(function(cb) { cb.checked = selectAll.checked; });
+              updateCount();
+            });
+          }
+
+          document.addEventListener('change', function(e) {
+            if (e.target && e.target.name === 'phones[]') {
+              updateCount();
+              if (selectAll && !e.target.checked) selectAll.checked = false;
+              if (selectAll) {
+                var all = getCheckboxes();
+                if (all.length > 0 && all.length === getChecked().length) selectAll.checked = true;
+              }
+            }
+          });
+
+          if (form) {
+            form.addEventListener('submit', function(e) {
+              var checked = getChecked();
+              if (checked.length === 0) {
+                e.preventDefault();
+                alert('Please select at least one number first.');
+                return;
+              }
+              if (!confirm('Unblock ' + checked.length + ' selected number(s)? They will be included in future sends again.')) {
+                e.preventDefault();
+              }
+            });
+          }
+        });
+      "),
+    ], 'iqr_blocklist_bulk_js'];
+
     return $build;
   }
 
@@ -275,6 +358,40 @@ class SubmissionsListController extends ControllerBase {
       $this->qrService->removeFromBlocklist($phone);
       $this->messenger()->addStatus($this->t('@phone removed from the blocklist — it will be included in future sends again.', ['@phone' => $phone]));
     }
+
+    return $this->redirect('invitation_qr.blocklist');
+  }
+
+  /**
+   * Unblocks a whole group of numbers selected via the checkboxes on the
+   * Global Blocklist page in one submit — e.g. everyone who was blocked for
+   * the same stale/no-longer-relevant reason, or an admin working through a
+   * CSV export offline and clearing the batch at once. Same underlying
+   * removeFromBlocklist() as the single-number path, just looped.
+   */
+  public function blocklistBulkRemove(Request $request): RedirectResponse {
+    $token = $request->request->get('form_token', '');
+    if (!\Drupal::csrfToken()->validate($token, 'iqr-blocklist')) {
+      $this->messenger()->addError($this->t('Security token invalid — please try again.'));
+      return $this->redirect('invitation_qr.blocklist');
+    }
+
+    $phones = $request->request->all('phones') ?: [];
+    $phones = array_filter(array_map('trim', is_array($phones) ? $phones : []));
+
+    if (empty($phones)) {
+      $this->messenger()->addWarning($this->t('No numbers selected. Please tick the checkboxes next to the numbers you want to unblock.'));
+      return $this->redirect('invitation_qr.blocklist');
+    }
+
+    foreach ($phones as $phone) {
+      $this->qrService->removeFromBlocklist($phone);
+    }
+
+    $this->messenger()->addStatus($this->t(
+      '@count number(s) removed from the blocklist — they will be included in future sends again.',
+      ['@count' => count($phones)]
+    ));
 
     return $this->redirect('invitation_qr.blocklist');
   }
