@@ -350,6 +350,13 @@ class TwilioWebhookController extends ControllerBase {
           $this->qrService->recordObservedRateLimit();
           $this->log("NOT blocklisting $failedPhone — rate-limit related failure (errorCode=$errorCode status=$messageStatus). Observed ceiling recorded.");
         }
+        elseif (InvitationQrService::isPolicyBlockErrorCode($errorCode)) {
+          // e.g. 63049 — Meta blocks delivery of a Marketing-template
+          // message. This is a template-category/policy block, not evidence
+          // the number itself is bad, so don't blocklist it — and it isn't
+          // a sending-rate signal either, so don't record it as one.
+          $this->log("NOT blocklisting $failedPhone — WhatsApp template policy block (errorCode=$errorCode status=$messageStatus), not a bad-number signal.");
+        }
         else {
           $this->qrService->addToBlocklist($failedPhone, 'Twilio delivery failure', $errorCode, $messageStatus);
           $this->log("BLOCKLIST: added $failedPhone (status=$messageStatus errorCode=$errorCode)");

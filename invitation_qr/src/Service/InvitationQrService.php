@@ -651,6 +651,30 @@ class InvitationQrService {
     return in_array((string) $errorCode, ['63018'], TRUE);
   }
 
+  /**
+   * Twilio/WhatsApp error codes that mean "Meta/WhatsApp blocked this
+   * message at the template/policy level" rather than "this phone number is
+   * bad". These must NEVER result in a blocklist entry, but — unlike
+   * isRateLimitErrorCode() above — they also must NOT be treated as a
+   * sending-rate signal (do not call recordObservedRateLimit() for these).
+   *
+   * - 63049 = "Meta blocks delivery of a WhatsApp message that uses a
+   *   Marketing template." Per Twilio's error reference, this is a
+   *   template-category policy block: permanent for U.S. recipients since
+   *   April 1, 2025 (Meta no longer delivers Marketing-category templates to
+   *   US numbers at all), and can be a temporary Meta-side throttle for
+   *   non-U.S. recipients. Either way it says nothing about whether this
+   *   specific phone number is valid or reachable — blocklisting the number
+   *   would incorrectly skip them on every future send (including sends
+   *   using a non-Marketing template), and folding it into the rate-limit
+   *   bucket would incorrectly poison the daily-conversation-limit ceiling
+   *   for every other recipient. So it gets its own category: skip
+   *   blocklisting, skip the rate-limit ceiling, just log it and move on.
+   */
+  public static function isPolicyBlockErrorCode(string $errorCode): bool {
+    return in_array((string) $errorCode, ['63049'], TRUE);
+  }
+
   public function isBlocklisted(string $phone): bool {
     $key = $this->blocklistKey($phone);
     if ($key === '') {
@@ -1157,13 +1181,17 @@ class InvitationQrService {
     ]);
 
     // Twilio rejected the send outright (e.g. invalid number) — blocklist it
-    // unless this was our own sending-rate limit being hit.
+    // unless this was our own sending-rate limit being hit, or a Meta/
+    // WhatsApp template-category policy block (see isPolicyBlockErrorCode()).
     $twilioErrorCode = (string) ($decoded['code'] ?? '');
-    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
-      $this->addToBlocklist($phone, 'Twilio API rejected ContentSid send', $twilioErrorCode, (string) $httpCode);
-    }
-    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+    if (self::isRateLimitErrorCode($twilioErrorCode)) {
       $this->recordObservedRateLimit();
+    }
+    elseif (self::isPolicyBlockErrorCode($twilioErrorCode)) {
+      $this->logger->notice('NOT blocklisting @phone — WhatsApp template policy block (errorCode=@code), not a bad-number signal.', ['@phone' => $phone, '@code' => $twilioErrorCode]);
+    }
+    elseif ($twilioErrorCode !== '') {
+      $this->addToBlocklist($phone, 'Twilio API rejected ContentSid send', $twilioErrorCode, (string) $httpCode);
     }
 
     return FALSE;
@@ -1230,11 +1258,14 @@ class InvitationQrService {
     ]);
 
     $twilioErrorCode = (string) ($decoded['code'] ?? '');
-    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
-      $this->addToBlocklist($phone, 'Twilio API rejected card image send', $twilioErrorCode, (string) $httpCode);
-    }
-    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+    if (self::isRateLimitErrorCode($twilioErrorCode)) {
       $this->recordObservedRateLimit();
+    }
+    elseif (self::isPolicyBlockErrorCode($twilioErrorCode)) {
+      $this->logger->notice('NOT blocklisting @phone — WhatsApp template policy block (errorCode=@code), not a bad-number signal.', ['@phone' => $phone, '@code' => $twilioErrorCode]);
+    }
+    elseif ($twilioErrorCode !== '') {
+      $this->addToBlocklist($phone, 'Twilio API rejected card image send', $twilioErrorCode, (string) $httpCode);
     }
 
     return FALSE;
@@ -1354,11 +1385,14 @@ class InvitationQrService {
     ]);
 
     $twilioErrorCode = (string) ($decoded['code'] ?? '');
-    if ($twilioErrorCode !== '' && !self::isRateLimitErrorCode($twilioErrorCode)) {
-      $this->addToBlocklist($phone, 'Twilio API rejected send', $twilioErrorCode, (string) $httpCode);
-    }
-    elseif (self::isRateLimitErrorCode($twilioErrorCode)) {
+    if (self::isRateLimitErrorCode($twilioErrorCode)) {
       $this->recordObservedRateLimit();
+    }
+    elseif (self::isPolicyBlockErrorCode($twilioErrorCode)) {
+      $this->logger->notice('NOT blocklisting @phone — WhatsApp template policy block (errorCode=@code), not a bad-number signal.', ['@phone' => $phone, '@code' => $twilioErrorCode]);
+    }
+    elseif ($twilioErrorCode !== '') {
+      $this->addToBlocklist($phone, 'Twilio API rejected send', $twilioErrorCode, (string) $httpCode);
     }
 
     return FALSE;
