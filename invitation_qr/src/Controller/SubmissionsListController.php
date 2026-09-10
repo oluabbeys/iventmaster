@@ -339,22 +339,24 @@ class SubmissionsListController extends ControllerBase {
 
     $total = count($submissions);
     $stamped = $unstamped = $unsent = $accessReady = $accessUnsent = $accessUnstamped = 0;
-    // Distinct guests needing ANY processing (invitation stamp, access
-    // stamp, or both) — this is what "Process Unstamped" actually queues,
-    // one item per guest. It must NOT be $unstamped + $accessUnstamped:
-    // that naive sum double-counts every guest missing both stamps, which
-    // can (and does) push the displayed total past the total guest count.
-    $needsProcessing = 0;
+    // Invitation stamping and access-card stamping are tracked (and
+    // actioned) completely independently, not as one combined bucket:
+    // invitation stamping is conditional — it only ever applies when
+    // name_enabled is on AND the guest has a name to overlay, so plenty of
+    // guests will never need it at all. Access-card stamping isn't
+    // conditional in that sense — every guest on a node that has an access
+    // card image is meant to get their own uniquely-QR-stamped card for
+    // check-in, so its backlog is a different kind of thing and deserves
+    // its own count/button ("Process Unstamped Access Cards" below) rather
+    // than being folded into invitation status.
     foreach ($submissions as $sub) {
       $d = $sub->getData();
-      $invNeedsThis = FALSE;
       if (!empty($d['stamped_card_fid'])) {
         $stamped++;
       }
       elseif ($this->invitationOverlayApplies($d, $nodeHasInvCardImg, $config)) {
         // Genuinely still needs a name-overlay stamp and doesn't have one.
         $unstamped++;
-        $invNeedsThis = TRUE;
       }
       // else: this guest's invitation never needs (and will never get) a
       // stamped image — not counted in either bucket, since there's
@@ -367,26 +369,12 @@ class SubmissionsListController extends ControllerBase {
         $unsent++;
       }
 
-      $accessNeedsThis = FALSE;
       if (!empty($d['access_card_fid'])) {
         $accessReady++;
         if (empty($d['access_card_sent'])) $accessUnsent++;
       }
       elseif ($nodeHasAccessCardImg) {
-        // Mirrors the invitation-side $unstamped bucket above, but for the
-        // access card — a guest whose invitation needs no name-overlay
-        // stamp (name_enabled off, no name supplied, etc.) previously never
-        // counted toward $unstamped at all, so "Process Unstamped" could
-        // stay hidden even though this guest's access card genuinely still
-        // needed its QR stamped. processUnstamped() itself already queues
-        // these guests via its own $accessNeedsWork check — this just makes
-        // the dashboard/button aware of the same thing.
         $accessUnstamped++;
-        $accessNeedsThis = TRUE;
-      }
-
-      if ($invNeedsThis || $accessNeedsThis) {
-        $needsProcessing++;
       }
     }
 
@@ -450,14 +438,14 @@ class SubmissionsListController extends ControllerBase {
 
     // Admin only buttons.
     if ($canAdminister) {
-      if ($needsProcessing > 0) {
-        // Button covers both — processUnstamped() itself already queues
-        // whichever of invitation/access stamping each guest still needs
-        // (see $invNeedsWork / $accessNeedsWork there), so one click handles
-        // both buckets even though they're shown as separate stat chips.
-        // Uses $needsProcessing (distinct guests), NOT $unstamped +
-        // $accessUnstamped, which double-counts guests missing both stamps.
-        $build['actions']['process'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped',['@n'=>$needsProcessing]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
+      if ($unstamped > 0) {
+        $build['actions']['process'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped Invitations',['@n'=>$unstamped]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
+      }
+      if ($accessUnstamped > 0) {
+        // Separate action/route from invitation stamping above — see the
+        // comment on $accessUnstamped's computation for why these are kept
+        // independent rather than combined into one button/count.
+        $build['actions']['process_access'] = ['#type'=>'link','#title'=>$this->t('⚙ Process @n Unstamped Access Cards',['@n'=>$accessUnstamped]),'#url'=>Url::fromRoute('invitation_qr.process_unstamped_access',['node'=>$node->id()]),'#attributes'=>['class'=>['button','button--primary']]];
       }
       $build['actions']['regen'] = ['#type'=>'link','#title'=>$this->t('🔄 Re-Generate All QRs'),'#url'=>Url::fromRoute('invitation_qr.generate_all',['node'=>$node->id()]),'#attributes'=>['class'=>['button']]];
       if ($twilioEnabled && $unsent > 0) {
@@ -1902,6 +1890,13 @@ class SubmissionsListController extends ControllerBase {
     return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
   }
 
+  /**
+   * Processes guests still needing an invitation name-overlay stamp.
+   * Deliberately scoped to invitation status ONLY — see
+   * invitationOverlayApplies() for why that's conditional (name_enabled,
+   * guest has a name), unlike access-card stamping which is handled
+   * entirely separately by processUnstampedAccess() below.
+   */
   public function processUnstamped(NodeInterface $node): RedirectResponse {
     $queue       = \Drupal::queue(InvitationQrService::QUEUE_NAME);
     $stateKey    = 'invitation_qr.unstamped_total_' . $node->id();
@@ -1917,30 +1912,21 @@ class SubmissionsListController extends ControllerBase {
       // Clear any stale queue items from a previous incomplete run.
       $queue->deleteQueue();
 
-      // A card-less node (no invitation_card/access_card field value) can
-      // never produce a stamped image — without this check it would show
-      // as perpetually "unstamped" on every click even though there's
-      // nothing left to do for it.
-      $config          = $this->config('invitation_qr.settings');
-      $invCardField    = $config->get('invitation_card_field') ?: 'field_invitation_card';
-      $accessCardField = $config->get('access_card_field') ?: 'field_access_card';
+      // A card-less node (no invitation_card field value) can never produce
+      // a stamped image — without this check it would show as perpetually
+      // "unstamped" on every click even though there's nothing left to do
+      // for it.
+      $config       = $this->config('invitation_qr.settings');
+      $invCardField = $config->get('invitation_card_field') ?: 'field_invitation_card';
 
       foreach ($submissions as $sub) {
         $sid = (int) $sub->id();
-        $db  = \Drupal::database();
 
         $parentNode = $this->qrService->findParentNode($sub);
-        $nodeHasInvCardImg    = $parentNode && $parentNode->hasField($invCardField) && !$parentNode->get($invCardField)->isEmpty();
-        $nodeHasAccessCardImg = $parentNode && $parentNode->hasField($accessCardField) && !$parentNode->get($accessCardField)->isEmpty();
+        $nodeHasInvCardImg = $parentNode && $parentNode->hasField($invCardField) && !$parentNode->get($invCardField)->isEmpty();
 
-        $subData = $sub->getData();
+        $subData    = $sub->getData();
         $hasInvCard = !empty($subData['stamped_card_fid']);
-        $hasAccessCard = (bool) $db->select('webform_submission_data', 'w')
-          ->fields('w', ['value'])
-          ->condition('sid', $sid)
-          ->condition('name', 'access_card_fid')
-          ->condition('property', '')->condition('delta', 0)
-          ->execute()->fetchField();
 
         // Only actually needs (re-)queuing when overlay stamping genuinely
         // applies to this guest and hasn't happened yet — see
@@ -1948,17 +1934,14 @@ class SubmissionsListController extends ControllerBase {
         // invitation will never get a stamped_card_fid (no overlay needed,
         // or no name to overlay) gets queued and reprocessed forever,
         // without ever counting as "done".
-        $invNeedsWork    = $this->invitationOverlayApplies($subData, $nodeHasInvCardImg, $config) && !$hasInvCard;
-        $accessNeedsWork = $nodeHasAccessCardImg && !$hasAccessCard;
-
-        if ($invNeedsWork || $accessNeedsWork) {
+        if ($this->invitationOverlayApplies($subData, $nodeHasInvCardImg, $config) && !$hasInvCard) {
           $this->qrService->queueSubmission($sid);
           $count++;
         }
       }
 
       if ($count === 0) {
-        $this->messenger()->addStatus($this->t('All cards are already stamped — nothing to process.'));
+        $this->messenger()->addStatus($this->t('All invitation cards are already stamped — nothing to process.'));
         return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
       }
 
@@ -1978,7 +1961,7 @@ class SubmissionsListController extends ControllerBase {
 
     if ($remaining > 0) {
       $this->messenger()->addWarning($this->t(
-        'Processed @done of @total. @remaining still queued — click Process Unstamped again to continue.',
+        'Stamped @done of @total invitation(s). @remaining still queued — click Process Unstamped Invitations again to continue.',
         ['@done' => $totalDone, '@total' => $storedTotal, '@remaining' => $remaining]
       ));
     }
@@ -1986,7 +1969,86 @@ class SubmissionsListController extends ControllerBase {
       \Drupal::state()->delete($stateKey);
       \Drupal::state()->delete($doneKey);
       $this->messenger()->addStatus($this->t(
-        'All @n unstamped guest card(s) processed successfully.', ['@n' => $storedTotal]
+        'All @n unstamped invitation(s) processed successfully. No access cards were affected.', ['@n' => $storedTotal]
+      ));
+    }
+
+    return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+  }
+
+  /**
+   * Processes guests still needing their access card QR-stamped.
+   * Deliberately independent of processUnstamped() above — access-card
+   * stamping isn't conditional the way invitation name-overlay is: every
+   * guest on a node that has an access card image is meant to get their
+   * own uniquely-QR-stamped card for check-in, so its backlog is tracked
+   * and actioned on its own rather than folded into invitation status.
+   */
+  public function processUnstampedAccess(NodeInterface $node): RedirectResponse {
+    $queue       = \Drupal::queue(InvitationQrService::QUEUE_NAME);
+    $stateKey    = 'invitation_qr.access_unstamped_total_' . $node->id();
+    $doneKey     = 'invitation_qr.access_unstamped_done_' . $node->id();
+    $storedTotal = \Drupal::state()->get($stateKey, 0);
+    $storedTotal = $this->clearStaleBatchState($storedTotal, $queue, [$stateKey, $doneKey]);
+
+    if ($storedTotal === 0) {
+      $submissions = $this->qrService->getSubmissionsForNode($node->id());
+      $count = 0;
+
+      $queue->deleteQueue();
+
+      $config          = $this->config('invitation_qr.settings');
+      $accessCardField = $config->get('access_card_field') ?: 'field_access_card';
+
+      foreach ($submissions as $sub) {
+        $sid = (int) $sub->id();
+        $db  = \Drupal::database();
+
+        $parentNode = $this->qrService->findParentNode($sub);
+        $nodeHasAccessCardImg = $parentNode && $parentNode->hasField($accessCardField) && !$parentNode->get($accessCardField)->isEmpty();
+
+        $hasAccessCard = (bool) $db->select('webform_submission_data', 'w')
+          ->fields('w', ['value'])
+          ->condition('sid', $sid)
+          ->condition('name', 'access_card_fid')
+          ->condition('property', '')->condition('delta', 0)
+          ->execute()->fetchField();
+
+        if ($nodeHasAccessCardImg && !$hasAccessCard) {
+          $this->qrService->queueSubmission($sid);
+          $count++;
+        }
+      }
+
+      if ($count === 0) {
+        $this->messenger()->addStatus($this->t('All access cards are already stamped — nothing to process.'));
+        return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+      }
+
+      \Drupal::state()->set($stateKey, $count);
+      \Drupal::state()->set($doneKey, 0);
+      $storedTotal = $count;
+    }
+
+    $beforeCount = $queue->numberOfItems();
+    $processed   = $this->processQueueInBatches(30);
+    $afterCount  = $queue->numberOfItems();
+    $totalDone   = \Drupal::state()->get($doneKey, 0) + ($beforeCount - $afterCount);
+    \Drupal::state()->set($doneKey, $totalDone);
+
+    $remaining = $afterCount;
+
+    if ($remaining > 0) {
+      $this->messenger()->addWarning($this->t(
+        'Stamped @done of @total access card(s). @remaining still queued — click Process Unstamped Access Cards again to continue.',
+        ['@done' => $totalDone, '@total' => $storedTotal, '@remaining' => $remaining]
+      ));
+    }
+    else {
+      \Drupal::state()->delete($stateKey);
+      \Drupal::state()->delete($doneKey);
+      $this->messenger()->addStatus($this->t(
+        'All @n unstamped access card(s) processed successfully. No invitations were affected.', ['@n' => $storedTotal]
       ));
     }
 

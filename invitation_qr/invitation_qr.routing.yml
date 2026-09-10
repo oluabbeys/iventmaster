@@ -71,7 +71,16 @@ invitation_qr.process_unstamped:
   path: '/admin/invitation-qr/process-unstamped/{node}'
   defaults:
     _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::processUnstamped'
-    _title: 'Process Unstamped'
+    _title: 'Process Unstamped Invitations'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+
+invitation_qr.process_unstamped_access:
+  path: '/admin/invitation-qr/process-unstamped-access/{node}'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\SubmissionsListController::processUnstampedAccess'
+    _title: 'Process Unstamped Access Cards'
   requirements:
     _permission: 'administer invitation qr'
     node: \d+
