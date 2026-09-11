@@ -138,6 +138,20 @@
 .iqr-submissions-table td { vertical-align: middle; }
 .iqr-events-table td      { vertical-align: middle; }
 
+/* ── Horizontal-scroll wrapper for wide tables ────────────────────────────
+   These tables have many columns and will overflow narrow viewports
+   (e.g. phones used by check-in staff at the door). Wrapping the table in
+   this container — instead of relying on the whole page to scroll — makes
+   sure a horizontal swipe/scroll always works, regardless of theme, role,
+   or toolbar state. */
+.iqr-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin-bottom: 1rem;
+}
+.iqr-table-scroll table { margin-bottom: 0; }
+
 /* Left-align every cell (header + body) by default; the checkbox column
    below overrides back to centered since it's just a tiny icon column. */
 .iqr-submissions-table th,

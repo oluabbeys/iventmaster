@@ -107,21 +107,25 @@ class SubmissionsListController extends ControllerBase {
     }
 
     $build['table'] = [
-      '#type'   => 'table',
-      '#header' => [
-        $this->t('Event Name'),
-        $this->t('Type'),
-        $this->t('Guests'),
-        $this->t('Inv. Stamped'),
-        $this->t('Inv. Sent'),
-        $this->t('Access Stamped'),
-        $this->t('Access Sent'),
-        $this->t('Created'),
-        $this->t('Actions'),
+      '#type'       => 'container',
+      '#attributes' => ['class' => ['iqr-table-scroll']],
+      'inner' => [
+        '#type'   => 'table',
+        '#header' => [
+          $this->t('Event Name'),
+          $this->t('Type'),
+          $this->t('Guests'),
+          $this->t('Inv. Stamped'),
+          $this->t('Inv. Sent'),
+          $this->t('Access Stamped'),
+          $this->t('Access Sent'),
+          $this->t('Created'),
+          $this->t('Actions'),
+        ],
+        '#rows'   => $rows,
+        '#empty'  => $search ? $this->t('No events found matching "@s".', ['@s'=>$search]) : $this->t('No invitation events found.'),
+        '#attributes' => ['class' => ['iqr-events-table']],
       ],
-      '#rows'   => $rows,
-      '#empty'  => $search ? $this->t('No events found matching "@s".', ['@s'=>$search]) : $this->t('No invitation events found.'),
-      '#attributes' => ['class' => ['iqr-events-table']],
     ];
 
     $build['#attached']['library'][] = 'invitation_qr/invitation-qr.admin';
@@ -249,21 +253,25 @@ class SubmissionsListController extends ControllerBase {
       ],
       'bulk_bar_top' => $bulkBar('_top'),
       'table' => [
-        '#type'   => 'table',
-        '#header' => [
-          $this->t('#'),
-          $this->t('Phone'),
-          $this->t('Reason'),
-          $this->t('Twilio Error Code'),
-          $this->t('Last Status'),
-          $this->t('Fail Count'),
-          $this->t('First Failed'),
-          $this->t('Last Failed'),
-          ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','id'=>'iqr-blocklist-select-all','title'=>$this->t('Select all')]]],
+        '#type'       => 'container',
+        '#attributes' => ['class' => ['iqr-table-scroll']],
+        'inner' => [
+          '#type'   => 'table',
+          '#header' => [
+            $this->t('#'),
+            $this->t('Phone'),
+            $this->t('Reason'),
+            $this->t('Twilio Error Code'),
+            $this->t('Last Status'),
+            $this->t('Fail Count'),
+            $this->t('First Failed'),
+            $this->t('Last Failed'),
+            ['data' => ['#type'=>'html_tag','#tag'=>'input','#attributes'=>['type'=>'checkbox','id'=>'iqr-blocklist-select-all','title'=>$this->t('Select all')]]],
+          ],
+          '#rows'   => $rows,
+          '#empty'  => $this->t('No numbers are blocklisted.'),
+          '#attributes' => ['class' => ['iqr-blocklist-table']],
         ],
-        '#rows'   => $rows,
-        '#empty'  => $this->t('No numbers are blocklisted.'),
-        '#attributes' => ['class' => ['iqr-blocklist-table']],
       ],
       'bulk_bar_bottom' => $bulkBar('_bottom'),
     ];
@@ -1111,18 +1119,22 @@ class SubmissionsListController extends ControllerBase {
     $headers[] = $this->t('🗑 Delete');
 
     $build['table'] = [
-      '#type'       => 'table',
-      '#caption'    => $this->t('"@title" — showing @from–@to of @filtered guests (total: @total)', [
-        '@title'    => $node->label(),
-        '@from'     => $filteredTotal ? ($currentPage * $perPage) + 1 : 0,
-        '@to'       => min(($currentPage + 1) * $perPage, $filteredTotal),
-        '@filtered' => $filteredTotal,
-        '@total'    => $total,
-      ]),
-      '#header'     => $headers,
-      '#rows'       => $rows,
-      '#empty'      => $this->t('No guests found.'),
-      '#attributes' => ['class' => ['iqr-submissions-table']],
+      '#type'       => 'container',
+      '#attributes' => ['class' => ['iqr-table-scroll']],
+      'inner' => [
+        '#type'       => 'table',
+        '#caption'    => $this->t('"@title" — showing @from–@to of @filtered guests (total: @total)', [
+          '@title'    => $node->label(),
+          '@from'     => $filteredTotal ? ($currentPage * $perPage) + 1 : 0,
+          '@to'       => min(($currentPage + 1) * $perPage, $filteredTotal),
+          '@filtered' => $filteredTotal,
+          '@total'    => $total,
+        ]),
+        '#header'     => $headers,
+        '#rows'       => $rows,
+        '#empty'      => $this->t('No guests found.'),
+        '#attributes' => ['class' => ['iqr-submissions-table']],
+      ],
     ];
 
     // ── Pagination links ───────────────────────────────────────────────────
@@ -2577,12 +2589,16 @@ class SubmissionsListController extends ControllerBase {
 
       return [
         'table' => [
-          '#type'       => 'table',
-          '#caption'    => $caption . $captionSuffix,
-          '#header'     => $header,
-          '#rows'       => $rows,
-          '#empty'      => $this->t('None.'),
-          '#attributes' => ['class' => ['iqr-submissions-table']],
+          '#type'       => 'container',
+          '#attributes' => ['class' => ['iqr-table-scroll']],
+          'inner' => [
+            '#type'       => 'table',
+            '#caption'    => $caption . $captionSuffix,
+            '#header'     => $header,
+            '#rows'       => $rows,
+            '#empty'      => $this->t('None.'),
+            '#attributes' => ['class' => ['iqr-submissions-table']],
+          ],
         ],
         'pager' => [
           '#type'     => 'pager',
