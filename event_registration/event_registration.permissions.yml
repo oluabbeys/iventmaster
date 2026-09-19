@@ -1,0 +1,7 @@
+create own event registrations:
+  title: 'Create own event registrations'
+  description: 'Allows a user to submit an Event''s registration webform via the API, owned by their own account. Does NOT grant any other webform or node access.'
+
+view own event registrations:
+  title: 'View own event registrations'
+  description: 'Allows a user to look up the events they have personally registered for via the API.'

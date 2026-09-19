@@ -1,0 +1,37 @@
+event_registration.form_schema:
+  path: '/api/event-registration/{node}/schema'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::schema'
+  methods: [GET]
+  requirements:
+    _permission: 'access content'
+    node: \d+
+  options:
+    parameters:
+      node:
+        type: 'entity:node'
+    no_cache: TRUE
+
+event_registration.submit:
+  path: '/api/event-registration/{node}/submit'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::submit'
+  methods: [POST]
+  requirements:
+    _permission: 'create own event registrations'
+    node: \d+
+  options:
+    parameters:
+      node:
+        type: 'entity:node'
+    no_cache: TRUE
+
+event_registration.my_registrations:
+  path: '/api/my-event-registrations'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::myRegistrations'
+  methods: [GET]
+  requirements:
+    _permission: 'view own event registrations'
+  options:
+    no_cache: TRUE

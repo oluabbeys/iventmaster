@@ -1,0 +1,8 @@
+name: 'Event Registration API'
+type: module
+description: 'Mobile-app-facing REST API: exposes a sanitised registration form schema per Event node, lets a signed-in attendee submit it (owned by their own account, tied to that event), and lets them look up their own past registrations. Built for iVentMaster mobile app in-app registration.'
+package: Custom
+core_version_requirement: ^10
+dependencies:
+  - drupal:webform
+  - drupal:node
