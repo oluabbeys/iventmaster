@@ -18,7 +18,7 @@ event_registration.submit:
     _controller: '\Drupal\event_registration\Controller\EventRegistrationController::submit'
   methods: [POST]
   requirements:
-    _permission: 'create own event registrations'
+    _permission: 'manage own event registrations'
     node: \d+
   options:
     parameters:
@@ -32,6 +32,6 @@ event_registration.my_registrations:
     _controller: '\Drupal\event_registration\Controller\EventRegistrationController::myRegistrations'
   methods: [GET]
   requirements:
-    _permission: 'view own event registrations'
+    _permission: 'manage own event registrations'
   options:
     no_cache: TRUE
