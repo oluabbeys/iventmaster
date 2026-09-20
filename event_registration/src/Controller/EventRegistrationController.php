@@ -3,12 +3,15 @@
 namespace Drupal\event_registration\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Url;
 use Drupal\node\NodeInterface;
 use Drupal\webform\Entity\Webform;
 use Drupal\webform\Entity\WebformSubmission;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Mobile-app-facing registration API.
@@ -192,6 +195,78 @@ class EventRegistrationController extends ControllerBase {
       'qr_content' => $node->id() . '/' . $submission->serial(),
       'event_title' => $node->label(),
     ], 201);
+  }
+
+  /**
+   * POST /api/event-registration/{node}/login-link
+   *
+   * Mints a single-use, 2-minute link that logs the already-OAuth-authenticated
+   * app user into a normal Drupal session and lands them on the event's page —
+   * used so the "Register" button can hand off to the real website (which
+   * already knows how to render this event's specific webform AND, for paid
+   * events, its Paystack checkout) without the attendee having to sign in
+   * again or retype their details. See event_registration.module's
+   * hook_form_alter() for the prefill half of this.
+   */
+  public function mobileLoginLink(NodeInterface $node): JsonResponse {
+    $uid = (int) $this->currentUser()->id();
+    if ($uid <= 0) {
+      return new JsonResponse(['error' => 'Sign-in required.'], 401);
+    }
+
+    $token = bin2hex(random_bytes(32));
+    \Drupal::keyValueExpirable('event_registration_login_tokens')->setWithExpire($token, $uid, 120);
+
+    $destination = $node->toUrl()->toString();
+    $url = Url::fromRoute('event_registration.mobile_login', ['token' => $token], [
+      'absolute' => TRUE,
+      'query' => ['destination' => $destination],
+    ])->toString();
+
+    return new JsonResponse(['url' => $url]);
+  }
+
+  /**
+   * GET /mobile-login/{token} — public route (the whole point is the app
+   * user isn't in a browser session yet). Single-use and short-lived: the
+   * token is deleted the moment it's read, valid or not, so a link can never
+   * be replayed.
+   */
+  public function mobileLogin(Request $request, string $token): Response {
+    $store = \Drupal::keyValueExpirable('event_registration_login_tokens');
+    $uid = $store->get($token);
+    $store->delete($token);
+
+    $destination = $request->query->get('destination', '/');
+    // Never redirect off-site with a route that just authenticated someone —
+    // only allow a same-site path, never a protocol-relative or absolute URL.
+    if (!is_string($destination) || $destination === '' || $destination[0] !== '/' || str_starts_with($destination, '//')) {
+      $destination = '/';
+    }
+
+    if (!$uid) {
+      // Expired or already-used link — send them to ordinary login rather
+      // than silently landing them on the event page still signed out.
+      return new RedirectResponse(Url::fromRoute('user.login', [], [
+        'query' => ['destination' => $destination],
+      ])->toString());
+    }
+
+    $account = $this->entityTypeManager()->getStorage('user')->load($uid);
+    if (!$account || !$account->isActive()) {
+      return new RedirectResponse(Url::fromRoute('user.login', [], [
+        'query' => ['destination' => $destination],
+      ])->toString());
+    }
+
+    user_login_finalize($account);
+    // Read by event_registration.module's hook_form_alter() to prefill the
+    // webform on the page this redirects to. Short-lived on purpose (it's a
+    // per-session flag, not per-request) — it only ever pre-fills fields, so
+    // there's no harm if it's still set for a few minutes of browsing.
+    \Drupal::service('tempstore.private')->get('event_registration')->set('app_prefill', TRUE);
+
+    return new RedirectResponse(Url::fromUserInput($destination)->toString());
   }
 
   /**

@@ -35,3 +35,28 @@ event_registration.my_registrations:
     _permission: 'manage own event registrations'
   options:
     no_cache: TRUE
+
+event_registration.login_link:
+  path: '/api/event-registration/{node}/login-link'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::mobileLoginLink'
+  methods: [POST]
+  requirements:
+    _user_is_logged_in: 'TRUE'
+    node: \d+
+  options:
+    parameters:
+      node:
+        type: 'entity:node'
+    no_cache: TRUE
+
+event_registration.mobile_login:
+  path: '/mobile-login/{token}'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::mobileLogin'
+  methods: [GET]
+  requirements:
+    _access: 'TRUE'
+    token: '[a-f0-9]{64}'
+  options:
+    no_cache: TRUE

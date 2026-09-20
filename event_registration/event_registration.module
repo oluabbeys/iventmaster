@@ -1,0 +1,88 @@
+<?php
+
+/**
+ * @file
+ * Event Registration API — hooks.
+ *
+ * The only hook here is the webform prefill: when someone arrives at a
+ * webform via the app's magic-login handoff (see
+ * EventRegistrationController::mobileLogin()), this fills in whatever the
+ * app already knows about them from their OWN Drupal account fields — never
+ * from another attendee's data, and never the sensitive identity fields
+ * (BVN, NIN, CAC Certificate, Address) the account also happens to carry.
+ * Only Email, Phone Number, Organization and Surname are ever read here.
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Render\Element;
+use Drupal\user\Entity\User;
+
+/**
+ * Implements hook_form_alter().
+ */
+function event_registration_form_alter(array &$form, FormStateInterface $form_state, string $form_id): void {
+  if (strpos($form_id, 'webform_submission_') !== 0) {
+    return;
+  }
+
+  $tempstore = \Drupal::service('tempstore.private')->get('event_registration');
+  if (!$tempstore->get('app_prefill')) {
+    return;
+  }
+
+  $currentUser = \Drupal::currentUser();
+  if ($currentUser->isAnonymous()) {
+    return;
+  }
+
+  $account = User::load($currentUser->id());
+  if (!$account) {
+    return;
+  }
+
+  $safe = static function (string $field) use ($account): ?string {
+    if (!$account->hasField($field) || $account->get($field)->isEmpty()) {
+      return NULL;
+    }
+    $value = $account->get($field)->value;
+    return is_string($value) && $value !== '' ? $value : NULL;
+  };
+
+  // Keyed by every element machine name we've seen used for these across
+  // the site's various per-event webforms and composites (e.g. the "Reg One
+  // Composite" element's first_name/last_name/email/phone_number). A form
+  // that uses different keys simply won't match anything here — this never
+  // guesses, it only fills a key it recognises.
+  $values = array_filter([
+    'email' => $safe('field_email') ?? $account->getEmail(),
+    'phone_number' => $safe('field_phone_number'),
+    'phone' => $safe('field_phone_number'),
+    'organization' => $safe('field_name_of_establishment'),
+    'last_name' => $safe('field_surname'),
+    'surname' => $safe('field_surname'),
+    'name' => $account->getDisplayName(),
+  ]);
+
+  if ($values) {
+    _event_registration_prefill_elements($form, $values);
+  }
+}
+
+/**
+ * Recurses into a form's render array (this is how Webform's composite
+ * elements, like "Reg One Composite", expose their sub-elements by the time
+ * hook_form_alter runs) and sets #default_value on any leaf whose key
+ * matches a value we have — but only if the element doesn't already have a
+ * default, so this never clobbers something the webform itself pre-filled.
+ */
+function _event_registration_prefill_elements(array &$element, array $values): void {
+  foreach (Element::children($element) as $key) {
+    if (!is_array($element[$key])) {
+      continue;
+    }
+    if (isset($values[$key]) && !empty($element[$key]['#type']) && empty($element[$key]['#default_value'])) {
+      $element[$key]['#default_value'] = $values[$key];
+    }
+    _event_registration_prefill_elements($element[$key], $values);
+  }
+}
