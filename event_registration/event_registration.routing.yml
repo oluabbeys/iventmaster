@@ -60,3 +60,13 @@ event_registration.mobile_login:
     token: '[a-f0-9]{64}'
   options:
     no_cache: TRUE
+
+event_registration.me:
+  path: '/api/me'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::me'
+  methods: [GET]
+  requirements:
+    _user_is_logged_in: 'TRUE'
+  options:
+    no_cache: TRUE

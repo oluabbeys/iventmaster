@@ -270,6 +270,44 @@ class EventRegistrationController extends ControllerBase {
   }
 
   /**
+   * GET /api/me
+   *
+   * The app's own "who am I" call, used for the post-login welcome
+   * greeting. Deliberately returns only the same safe subset of account
+   * fields the webform prefill hook reads (event_registration.module) —
+   * never BVN, NIN, CAC Certificate or Address, which this account also
+   * happens to carry. No new OAuth scope needed: _user_is_logged_in just
+   * checks the token is authenticated at all, it doesn't call
+   * hasPermission(), so it isn't affected by Simple OAuth's per-scope
+   * permission restriction the way a JSON:API user lookup would be.
+   */
+  public function me(): JsonResponse {
+    $uid = (int) $this->currentUser()->id();
+    if ($uid <= 0) {
+      return new JsonResponse(['error' => 'Sign-in required.'], 401);
+    }
+
+    $account = $this->entityTypeManager()->getStorage('user')->load($uid);
+    if (!$account) {
+      return new JsonResponse(['error' => 'Account not found.'], 404);
+    }
+
+    $safe = static function (string $field) use ($account): ?string {
+      if (!$account->hasField($field) || $account->get($field)->isEmpty()) {
+        return NULL;
+      }
+      $value = $account->get($field)->value;
+      return is_string($value) && $value !== '' ? $value : NULL;
+    };
+
+    return new JsonResponse([
+      'name' => $account->getDisplayName(),
+      'email' => $safe('field_email') ?? $account->getEmail(),
+      'organization' => $safe('field_name_of_establishment'),
+    ]);
+  }
+
+  /**
    * GET /api/my-event-registrations
    *
    * The app manages several events at once (Discover lists many, and an
