@@ -1,0 +1,130 @@
+<?php
+
+/**
+ * @file
+ * Install/update hooks for the Event Registration module.
+ */
+
+use Drupal\field\Entity\FieldConfig;
+use Drupal\field\Entity\FieldStorageConfig;
+use Drupal\node\Entity\NodeType;
+
+/**
+ * Creates the 'announcement' content type (Title, Body, field_event
+ * reference to Event) and adds a multi-value field_event_documents File
+ * field to the 'event' content type.
+ *
+ * Both are then readable through the site's existing generic JSON:API
+ * with no further backend code -- exactly like Session/Speaker already
+ * are -- because field_event here deliberately reuses whatever
+ * field_event storage Session already created (only the per-bundle
+ * FieldConfig is added if that storage already exists; nothing about
+ * Session's own field is touched).
+ */
+function event_registration_update_10001(): string {
+  // --- 'announcement' content type -----------------------------------
+  if (!NodeType::load('announcement')) {
+    NodeType::create([
+      'type' => 'announcement',
+      'name' => 'Announcement',
+      'description' => 'A post attached to one event, shown to registered attendees under the app\'s Announcements tab.',
+    ])->save();
+  }
+
+  // Body field -- added via node module's own helper, the same way
+  // Standard-profile content types get it, since a type created by code
+  // doesn't get one automatically.
+  if (function_exists('node_add_body_field')) {
+    node_add_body_field(NodeType::load('announcement'), 'Body');
+  }
+
+  // field_event: entity reference to node:event, cardinality 1. Reuses
+  // Session's field name so the app's existing
+  // filter[field_event.id]=<event uuid> JSON:API pattern works for
+  // announcements unchanged.
+  if (!FieldStorageConfig::loadByName('node', 'field_event')) {
+    FieldStorageConfig::create([
+      'field_name' => 'field_event',
+      'entity_type' => 'node',
+      'type' => 'entity_reference',
+      'cardinality' => 1,
+      'settings' => ['target_type' => 'node'],
+    ])->save();
+  }
+  if (!FieldConfig::loadByName('node', 'announcement', 'field_event')) {
+    FieldConfig::create([
+      'field_name' => 'field_event',
+      'entity_type' => 'node',
+      'bundle' => 'announcement',
+      'label' => 'Event',
+      'required' => TRUE,
+      'settings' => [
+        'handler' => 'default:node',
+        'handler_settings' => [
+          'target_bundles' => ['event' => 'event'],
+        ],
+      ],
+    ])->save();
+  }
+
+  // --- field_event_documents on 'event' -------------------------------
+  if (!FieldStorageConfig::loadByName('node', 'field_event_documents')) {
+    FieldStorageConfig::create([
+      'field_name' => 'field_event_documents',
+      'entity_type' => 'node',
+      'type' => 'file',
+      'cardinality' => -1,
+      'settings' => ['uri_scheme' => 'public'],
+    ])->save();
+  }
+  if (!FieldConfig::loadByName('node', 'event', 'field_event_documents')) {
+    FieldConfig::create([
+      'field_name' => 'field_event_documents',
+      'entity_type' => 'node',
+      'bundle' => 'event',
+      'label' => 'Documents',
+      'settings' => [
+        'file_extensions' => 'pdf doc docx ppt pptx xls xlsx txt',
+        'file_directory' => 'event-documents',
+        'max_filesize' => '',
+        'description_field' => FALSE,
+      ],
+    ])->save();
+  }
+
+  // --- form/view displays, so both fields actually show up in the
+  // admin UI (JSON:API doesn't need this, editors do) -----------------
+  $displayRepo = \Drupal::service('entity_display.repository');
+
+  $displayRepo->getFormDisplay('node', 'announcement', 'default')
+    ->setComponent('field_event', [
+      'type' => 'entity_reference_autocomplete',
+      'weight' => 0,
+    ])
+    ->save();
+
+  $displayRepo->getViewDisplay('node', 'announcement', 'default')
+    ->setComponent('field_event', [
+      'type' => 'entity_reference_label',
+      'label' => 'above',
+      'weight' => 0,
+    ])
+    ->save();
+
+  $displayRepo->getFormDisplay('node', 'event', 'default')
+    ->setComponent('field_event_documents', [
+      'type' => 'file_generic',
+      'weight' => 50,
+    ])
+    ->save();
+
+  $displayRepo->getViewDisplay('node', 'event', 'default')
+    ->setComponent('field_event_documents', [
+      'type' => 'file_default',
+      'label' => 'above',
+      'weight' => 50,
+    ])
+    ->save();
+
+  return t('Created the announcement content type (with field_event) and the field_event_documents field on Event.');
+}
