@@ -400,13 +400,24 @@ class EventRegistrationController extends ControllerBase {
       return new JsonResponse(['error' => 'Sign-in required.'], 401);
     }
 
-    // Every 'event' node that has a per-event webform wired up.
-    $nids = $this->entityTypeManager()->getStorage('node')
+    // Every 'event' node that has a per-event webform wired up -- via
+    // EITHER of the two places loadEventWebform() itself knows to look
+    // (the Webform-reference field, or the plain-text id field some
+    // events use instead; see loadEventWebform()'s own doc comment).
+    // Filtering on field_webform1 alone silently dropped any event that
+    // only has field_webform_id set, so an attendee registered for one
+    // of THOSE events never saw it in My Events even though schema()/
+    // participants() on that same node worked fine.
+    $nodeQuery = $this->entityTypeManager()->getStorage('node')
       ->getQuery()
       ->condition('type', 'event')
-      ->exists('field_webform1')
-      ->accessCheck(FALSE)
-      ->execute();
+      ->accessCheck(FALSE);
+    $nodeQuery->condition(
+      $nodeQuery->orConditionGroup()
+        ->exists('field_webform1')
+        ->exists('field_webform_id')
+    );
+    $nids = $nodeQuery->execute();
 
     if (!$nids) {
       return new JsonResponse(['registrations' => []]);
