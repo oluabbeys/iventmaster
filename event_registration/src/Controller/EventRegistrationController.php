@@ -368,6 +368,11 @@ class EventRegistrationController extends ControllerBase {
           'serial' => (int) $submission->serial(),
           'qr_content' => $node->id() . '/' . $submission->serial(),
           'registered_at' => (int) $submission->getCreatedTime(),
+          // So the app can split My Events into Upcoming/Past without a
+          // second round trip per event -- same two fields Discover already
+          // reads (see IventEvent.fromJsonApi on the Flutter side).
+          'event_start' => $this->fieldValue($node, 'field_event_start'),
+          'event_end' => $this->fieldValue($node, 'field_event_date'),
         ];
       }
     }
