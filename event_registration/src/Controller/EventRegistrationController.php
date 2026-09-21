@@ -105,6 +105,18 @@ class EventRegistrationController extends ControllerBase {
     }
 
     $alreadyRegistered = $this->findOwnSubmission($webform->id(), $node->id());
+    if (!$alreadyRegistered) {
+      // Someone may have filled this event's webform on the attendee's
+      // behalf (staff at registration, a colleague's shared/admin session,
+      // or a registration made before this API existed) -- that
+      // submission's uid won't be this account, but the email they typed
+      // in will be theirs. See findSubmissionByEmail() for why email is the
+      // more reliable "already registered" signal.
+      $email = $this->currentUserEmail();
+      if ($email) {
+        $alreadyRegistered = $this->findSubmissionByEmail($webform, $node->id(), $email);
+      }
+    }
 
     return new JsonResponse($base + [
       'enabled' => TRUE,
@@ -144,8 +156,18 @@ class EventRegistrationController extends ControllerBase {
     }
 
     // Idempotency: never let one attendee create two tickets for the same
-    // event from the app.
+    // event from the app. Checked by uid first, then by email (see
+    // findSubmissionByEmail()) so someone already registered under a
+    // different session -- staff at the desk, a shared/admin login --
+    // doesn't get a second, duplicate ticket just because it's their first
+    // time registering through the app.
     $existing = $this->findOwnSubmission($webform->id(), $node->id(), $uid);
+    if (!$existing) {
+      $email = $this->currentUserEmail();
+      if ($email) {
+        $existing = $this->findSubmissionByEmail($webform, $node->id(), $email);
+      }
+    }
     if ($existing) {
       return new JsonResponse([
         'success' => TRUE,
@@ -354,30 +376,67 @@ class EventRegistrationController extends ControllerBase {
       ->execute();
 
     $registrations = [];
+    $matchedNids = [];
     if ($sids) {
       $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($sids);
       foreach ($submissions as $submission) {
         $node = $webformIdToNode[$submission->getWebform()->id()] ?? NULL;
-        if (!$node) {
+        if (!$node || !$submission instanceof WebformSubmission) {
           continue;
         }
-        $registrations[] = [
-          'nid' => (int) $node->id(),
-          'event_title' => $node->label(),
-          'sid' => (int) $submission->id(),
-          'serial' => (int) $submission->serial(),
-          'qr_content' => $node->id() . '/' . $submission->serial(),
-          'registered_at' => (int) $submission->getCreatedTime(),
-          // So the app can split My Events into Upcoming/Past without a
-          // second round trip per event -- same two fields Discover already
-          // reads (see IventEvent.fromJsonApi on the Flutter side).
-          'event_start' => $this->fieldValue($node, 'field_event_start'),
-          'event_end' => $this->fieldValue($node, 'field_event_date'),
-        ];
+        $registrations[] = $this->buildRegistrationEntry($node, $submission);
+        $matchedNids[(int) $node->id()] = TRUE;
+      }
+    }
+
+    // Second pass, by email: someone may have filled an event's webform on
+    // the attendee's behalf (staff at registration, a colleague's
+    // shared/admin session, or a registration made before this API
+    // existed) -- that submission's uid won't be this account, but the
+    // email typed into it will be theirs. Bounded to events not already
+    // matched above, one event at a time, so this stays cheap relative to
+    // the uid-based bulk query.
+    $email = $this->currentUserEmail();
+    if ($email) {
+      foreach ($webformIdToNode as $webformId => $node) {
+        $nid = (int) $node->id();
+        if (isset($matchedNids[$nid])) {
+          continue;
+        }
+        $webform = Webform::load($webformId);
+        if (!$webform) {
+          continue;
+        }
+        $byEmail = $this->findSubmissionByEmail($webform, $nid, $email);
+        if ($byEmail) {
+          $registrations[] = $this->buildRegistrationEntry($node, $byEmail);
+          $matchedNids[$nid] = TRUE;
+        }
       }
     }
 
     return new JsonResponse(['registrations' => $registrations]);
+  }
+
+  /**
+   * Shapes one registration entry for /api/my-event-registrations, shared
+   * by the uid-matched pass and the email-matched top-up pass above so
+   * both produce identically-shaped results.
+   */
+  protected function buildRegistrationEntry(NodeInterface $node, WebformSubmission $submission): array {
+    return [
+      'nid' => (int) $node->id(),
+      'event_title' => $node->label(),
+      'sid' => (int) $submission->id(),
+      'serial' => (int) $submission->serial(),
+      'qr_content' => $node->id() . '/' . $submission->serial(),
+      'registered_at' => (int) $submission->getCreatedTime(),
+      // So the app can split My Events into Upcoming/Past without a
+      // second round trip per event -- same two fields Discover already
+      // reads (see IventEvent.fromJsonApi on the Flutter side).
+      'event_start' => $this->fieldValue($node, 'field_event_start'),
+      'event_end' => $this->fieldValue($node, 'field_event_date'),
+    ];
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────
@@ -432,6 +491,115 @@ class EventRegistrationController extends ControllerBase {
     }
     $submission = $this->entityTypeManager()->getStorage('webform_submission')->load(reset($sids));
     return $submission instanceof WebformSubmission ? $submission : NULL;
+  }
+
+  /**
+   * The signed-in app user's own email address -- the same safe lookup
+   * me() and event_registration.module's prefill hook use (field_email
+   * first, falling back to the Drupal account email), never any of the
+   * account's other identity fields.
+   */
+  protected function currentUserEmail(): ?string {
+    $uid = (int) $this->currentUser()->id();
+    if ($uid <= 0) {
+      return NULL;
+    }
+    $account = $this->entityTypeManager()->getStorage('user')->load($uid);
+    if (!$account) {
+      return NULL;
+    }
+    if ($account->hasField('field_email') && !$account->get('field_email')->isEmpty()) {
+      $value = $account->get('field_email')->value;
+      if (is_string($value) && $value !== '') {
+        return $value;
+      }
+    }
+    $email = $account->getEmail();
+    return is_string($email) && $email !== '' ? $email : NULL;
+  }
+
+  /**
+   * Finds a submission of this event's webform whose registrant EMAIL
+   * matches, regardless of which Drupal account (uid) happened to be
+   * logged in when it was submitted.
+   *
+   * This matters because a registration can be entered by someone other
+   * than the attendee it's for -- staff filling the public webform at a
+   * front desk, a colleague registering someone on a shared/admin session,
+   * or simply a registration made before this API and its account-owned
+   * flow existed. In every one of those cases the submission's uid is
+   * whoever's Drupal session was active, not the actual attendee -- but
+   * the email they typed into the form is theirs. Email is therefore a
+   * more reliable "is this person registered" signal than uid alone, and
+   * this is the one place that reconciles the two.
+   */
+  protected function findSubmissionByEmail(Webform $webform, int $nid, string $email): ?WebformSubmission {
+    $email = mb_strtolower(trim($email));
+    if ($email === '') {
+      return NULL;
+    }
+
+    $emailKeys = $this->emailElementKeys($webform);
+    if (!$emailKeys) {
+      return NULL;
+    }
+
+    $sids = $this->entityTypeManager()->getStorage('webform_submission')
+      ->getQuery()
+      ->condition('webform_id', $webform->id())
+      ->condition('entity_type', 'node')
+      ->condition('entity_id', $nid)
+      ->accessCheck(FALSE)
+      ->execute();
+    if (!$sids) {
+      return NULL;
+    }
+
+    // Newest first: if the same email somehow ended up on more than one
+    // submission for this event, surface the most recent as "the" ticket.
+    rsort($sids);
+
+    $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($sids);
+    foreach ($submissions as $submission) {
+      if (!$submission instanceof WebformSubmission) {
+        continue;
+      }
+      $data = $submission->getData();
+      foreach ($emailKeys as $key) {
+        $value = is_array($key) ? ($data[$key[0]][$key[1]] ?? NULL) : ($data[$key] ?? NULL);
+        if (is_string($value) && mb_strtolower(trim($value)) === $email) {
+          return $submission;
+        }
+      }
+    }
+
+    return NULL;
+  }
+
+  /**
+   * Element keys on this webform whose type is "email" -- a bare key for a
+   * top-level email element, or [composite_key, sub_key] for an email
+   * subfield inside a composite (e.g. "reg_one_composite"'s "email").
+   * Discovered generically from the same schema buildFieldSchema() already
+   * produces, so a differently-shaped webform or composite needs no code
+   * change here.
+   */
+  protected function emailElementKeys(Webform $webform): array {
+    $keys = [];
+    foreach ($this->buildFieldSchema($webform) as $field) {
+      if ($field['type'] === 'email') {
+        $keys[] = $field['key'];
+        continue;
+      }
+      if ($field['type'] === 'composite') {
+        foreach ($field['subfields'] as $sub) {
+          if ($sub['type'] === 'email') {
+            $keys[] = [$field['key'], $sub['key']];
+          }
+        }
+      }
+    }
+    return $keys;
   }
 
   /**
