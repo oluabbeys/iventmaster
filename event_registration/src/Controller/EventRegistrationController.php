@@ -442,6 +442,66 @@ class EventRegistrationController extends ControllerBase {
   // ── Helpers ─────────────────────────────────────────────────────────────
 
   /**
+   * GET /api/event-registration/{node}/participants
+   *
+   * The event's attendee roster -- name and organisation only, for
+   * in-person networking (see chat's per-event roster on the plan doc).
+   * Deliberately never returns the sensitive identity fields (BVN, NIN,
+   * CAC Certificate, Address) or contact details (email, phone) any of
+   * these accounts might also carry -- same "only what's needed" rule
+   * event_registration.module's prefill hook already follows. Visible to
+   * any authenticated app user, same access as the event's own schema().
+   */
+  public function participants(NodeInterface $node): JsonResponse {
+    if ($node->bundle() !== 'event') {
+      return new JsonResponse(['error' => 'Not an event.'], 404);
+    }
+
+    $webform = $this->loadEventWebform($node);
+    if (!$webform) {
+      return new JsonResponse(['participants' => [], 'count' => 0]);
+    }
+
+    $sids = $this->entityTypeManager()->getStorage('webform_submission')
+      ->getQuery()
+      ->condition('webform_id', $webform->id())
+      ->condition('entity_type', 'node')
+      ->condition('entity_id', $node->id())
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if (!$sids) {
+      return new JsonResponse(['participants' => [], 'count' => 0]);
+    }
+
+    $nameKeys = $this->nameElementKeys($webform);
+    $orgKeys = $this->organizationElementKeys($webform);
+
+    $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($sids);
+    $participants = [];
+    foreach ($submissions as $submission) {
+      if (!$submission instanceof WebformSubmission) {
+        continue;
+      }
+      $data = $submission->getData();
+      $participants[] = [
+        'sid' => (int) $submission->id(),
+        'name' => $this->extractName($data, $nameKeys) ?? 'Registered attendee',
+        'organization' => $this->extractFirstValue($data, $orgKeys),
+        'registered_at' => (int) $submission->getCreatedTime(),
+      ];
+    }
+
+    // Most-recently-registered first.
+    usort($participants, static fn(array $a, array $b) => $b['registered_at'] <=> $a['registered_at']);
+
+    return new JsonResponse([
+      'participants' => $participants,
+      'count' => count($participants),
+    ]);
+  }
+
+  /**
    * Resolves the Event's actual per-event registration webform, whichever
    * of the two places it's recorded in currently holds a value (the
    * Webform-reference field is the normal path; field_webform_id is a
@@ -600,6 +660,108 @@ class EventRegistrationController extends ControllerBase {
       }
     }
     return $keys;
+  }
+
+  /**
+   * Element keys on this webform that look like a person's name -- either
+   * one "full name" key, or a [first, last] pair to join. Classified by
+   * key name (first_name/last_name/surname/name), same generic
+   * buildFieldSchema() walk as emailElementKeys(), so a differently-shaped
+   * webform needs no code change here.
+   */
+  protected function nameElementKeys(Webform $webform): array {
+    $first = NULL;
+    $last = NULL;
+    $full = NULL;
+
+    $consider = function ($path, string $key, string $type) use (&$first, &$last, &$full) {
+      if (!in_array($type, ['text', 'multiline'], TRUE)) {
+        return;
+      }
+      $lower = mb_strtolower($key);
+      if ($full === NULL && in_array($lower, ['name', 'full_name', 'fullname'], TRUE)) {
+        $full = $path;
+      }
+      elseif ($first === NULL && (str_contains($lower, 'first_name') || $lower === 'firstname')) {
+        $first = $path;
+      }
+      elseif ($last === NULL && (str_contains($lower, 'last_name') || str_contains($lower, 'surname') || $lower === 'lastname')) {
+        $last = $path;
+      }
+    };
+
+    foreach ($this->buildFieldSchema($webform) as $field) {
+      $consider($field['key'], $field['key'], $field['type']);
+      if ($field['type'] === 'composite') {
+        foreach ($field['subfields'] as $sub) {
+          $consider([$field['key'], $sub['key']], $sub['key'], $sub['type']);
+        }
+      }
+    }
+
+    return ['first' => $first, 'last' => $last, 'full' => $full];
+  }
+
+  /**
+   * Element keys on this webform that look like an organisation/company
+   * name, top-level or inside a composite -- same pattern as
+   * nameElementKeys() and emailElementKeys().
+   */
+  protected function organizationElementKeys(Webform $webform): array {
+    $looksLikeOrganization = static function (string $key): bool {
+      $key = mb_strtolower($key);
+      return str_contains($key, 'organi') || str_contains($key, 'company') || str_contains($key, 'establishment');
+    };
+
+    $keys = [];
+    foreach ($this->buildFieldSchema($webform) as $field) {
+      if (in_array($field['type'], ['text', 'multiline'], TRUE) && $looksLikeOrganization($field['key'])) {
+        $keys[] = $field['key'];
+      }
+      if ($field['type'] === 'composite') {
+        foreach ($field['subfields'] as $sub) {
+          if (in_array($sub['type'], ['text', 'multiline'], TRUE) && $looksLikeOrganization($sub['key'])) {
+            $keys[] = [$field['key'], $sub['key']];
+          }
+        }
+      }
+    }
+    return $keys;
+  }
+
+  /**
+   * First non-empty string value found at any of these element keys in a
+   * submission's data -- a bare key for a top-level element, or
+   * [composite_key, sub_key] for a subfield. Same key-path shape
+   * findSubmissionByEmail() already uses.
+   */
+  protected function extractFirstValue(array $data, array $keys): ?string {
+    foreach ($keys as $key) {
+      $value = is_array($key) ? ($data[$key[0]][$key[1]] ?? NULL) : ($data[$key] ?? NULL);
+      if (is_string($value) && trim($value) !== '') {
+        return trim($value);
+      }
+    }
+    return NULL;
+  }
+
+  /**
+   * Renders a submission's registrant name from whatever nameElementKeys()
+   * found: the "full name" key if there is one, otherwise first + last
+   * joined. Returns NULL (never an empty string) when nothing was found,
+   * so callers can fall back to a placeholder.
+   */
+  protected function extractName(array $data, array $nameKeys): ?string {
+    if ($nameKeys['full']) {
+      $value = $this->extractFirstValue($data, [$nameKeys['full']]);
+      if ($value) {
+        return $value;
+      }
+    }
+    $first = $nameKeys['first'] ? $this->extractFirstValue($data, [$nameKeys['first']]) : NULL;
+    $last = $nameKeys['last'] ? $this->extractFirstValue($data, [$nameKeys['last']]) : NULL;
+    $combined = trim(($first ?? '') . ' ' . ($last ?? ''));
+    return $combined !== '' ? $combined : NULL;
   }
 
   /**

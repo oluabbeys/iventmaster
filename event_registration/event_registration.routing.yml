@@ -70,3 +70,17 @@ event_registration.me:
     _user_is_logged_in: 'TRUE'
   options:
     no_cache: TRUE
+
+event_registration.participants:
+  path: '/api/event-registration/{node}/participants'
+  defaults:
+    _controller: '\Drupal\event_registration\Controller\EventRegistrationController::participants'
+  methods: [GET]
+  requirements:
+    _permission: 'access content'
+    node: \d+
+  options:
+    parameters:
+      node:
+        type: 'entity:node'
+    no_cache: TRUE
