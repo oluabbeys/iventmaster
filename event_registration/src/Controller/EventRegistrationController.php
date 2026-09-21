@@ -5,6 +5,7 @@ namespace Drupal\event_registration\Controller;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Url;
 use Drupal\node\NodeInterface;
+use Drupal\user\UserInterface;
 use Drupal\webform\Entity\Webform;
 use Drupal\webform\Entity\WebformSubmission;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -323,10 +324,66 @@ class EventRegistrationController extends ControllerBase {
     };
 
     return new JsonResponse([
-      'name' => $account->getDisplayName(),
+      'name' => $this->resolveDisplayName($account),
       'email' => $safe('field_email') ?? $account->getEmail(),
       'organization' => $safe('field_name_of_establishment'),
     ]);
+  }
+
+  /**
+   * The Drupal account's own name field is a login username (often an
+   * email address or an arbitrary handle picked at signup), never a real
+   * first name -- there is no first-name field on the User entity at all.
+   * The user's REAL name was captured once already, in whichever event
+   * registration webform they filled in through the app, so this looks
+   * up that user's own most recent submission (any event, any webform)
+   * and extracts a name from it with the same nameElementKeys() /
+   * extractName() logic already used for the participants list. Falls
+   * back to the account's display name when no submission has a usable
+   * name, so this never returns an empty string.
+   */
+  protected function resolveDisplayName(UserInterface $account): string {
+    $fallback = $account->getDisplayName();
+
+    $submission = $this->mostRecentOwnSubmission((int) $account->id());
+    if (!$submission) {
+      return $fallback;
+    }
+
+    $webform = $submission->getWebform();
+    if (!$webform) {
+      return $fallback;
+    }
+
+    $nameKeys = $this->nameElementKeys($webform);
+    $extracted = $this->extractName($submission->getData(), $nameKeys);
+
+    return $extracted ?? $fallback;
+  }
+
+  /**
+   * This account's own most recent webform submission, across ANY event
+   * or webform -- unlike findOwnSubmission()/findSubmissionByEmail(),
+   * which are both scoped to one event's webform, this is a general
+   * "what did this signed-in user last submit" lookup, used to recover a
+   * real name for the welcome greeting.
+   */
+  protected function mostRecentOwnSubmission(int $uid): ?WebformSubmission {
+    if ($uid <= 0) {
+      return NULL;
+    }
+    $sids = $this->entityTypeManager()->getStorage('webform_submission')
+      ->getQuery()
+      ->condition('uid', $uid)
+      ->sort('created', 'DESC')
+      ->range(0, 1)
+      ->accessCheck(FALSE)
+      ->execute();
+    if (!$sids) {
+      return NULL;
+    }
+    $submission = $this->entityTypeManager()->getStorage('webform_submission')->load(reset($sids));
+    return $submission instanceof WebformSubmission ? $submission : NULL;
   }
 
   /**
@@ -452,14 +509,20 @@ class EventRegistrationController extends ControllerBase {
    * event_registration.module's prefill hook already follows. Visible to
    * any authenticated app user, same access as the event's own schema().
    */
-  public function participants(NodeInterface $node): JsonResponse {
+  public function participants(Request $request, NodeInterface $node): JsonResponse {
     if ($node->bundle() !== 'event') {
       return new JsonResponse(['error' => 'Not an event.'], 404);
     }
 
+    // Paginated -- a popular event's roster can run into the hundreds, and
+    // the app asks for it a page at a time (see MyRegistration... no, see
+    // EventParticipant/eventParticipantsProvider on the Flutter side).
+    $limit = max(1, min(100, (int) ($request->query->get('limit') ?? 30)));
+    $offset = max(0, (int) ($request->query->get('offset') ?? 0));
+
     $webform = $this->loadEventWebform($node);
     if (!$webform) {
-      return new JsonResponse(['participants' => [], 'count' => 0]);
+      return new JsonResponse(['participants' => [], 'total' => 0, 'has_more' => FALSE]);
     }
 
     $sids = $this->entityTypeManager()->getStorage('webform_submission')
@@ -471,15 +534,26 @@ class EventRegistrationController extends ControllerBase {
       ->execute();
 
     if (!$sids) {
-      return new JsonResponse(['participants' => [], 'count' => 0]);
+      return new JsonResponse(['participants' => [], 'total' => 0, 'has_more' => FALSE]);
     }
+
+    $total = count($sids);
+
+    // Newest-registered first. A submission id is assigned in registration
+    // order, so sorting ids descending gives the same order as sorting by
+    // registered_at descending, without loading every submission just to
+    // sort them -- and it lets us slice the ONE page we need before
+    // loading anything.
+    rsort($sids);
+    $pageIds = array_slice($sids, $offset, $limit);
 
     $nameKeys = $this->nameElementKeys($webform);
     $orgKeys = $this->organizationElementKeys($webform);
 
-    $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($sids);
+    $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($pageIds);
     $participants = [];
-    foreach ($submissions as $submission) {
+    foreach ($pageIds as $sid) {
+      $submission = $submissions[$sid] ?? NULL;
       if (!$submission instanceof WebformSubmission) {
         continue;
       }
@@ -492,12 +566,10 @@ class EventRegistrationController extends ControllerBase {
       ];
     }
 
-    // Most-recently-registered first.
-    usort($participants, static fn(array $a, array $b) => $b['registered_at'] <=> $a['registered_at']);
-
     return new JsonResponse([
       'participants' => $participants,
-      'count' => count($participants),
+      'total' => $total,
+      'has_more' => ($offset + count($pageIds)) < $total,
     ]);
   }
 
