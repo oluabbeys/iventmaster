@@ -539,6 +539,53 @@ class EventRegistrationController extends ControllerBase {
 
     $total = count($sids);
 
+    $nameKeys = $this->nameElementKeys($webform);
+    $orgKeys = $this->organizationElementKeys($webform);
+
+    // Search mode: a name/organization filter, checked against every
+    // registrant for this event rather than one page at a time. Per-event
+    // rosters run to the low hundreds at most, so filtering in PHP with
+    // the exact same extractName()/extractFirstValue() helpers already
+    // trusted for plain pagination is simpler and safer than a second,
+    // untested query path against webform_submission_data's composite-
+    // element storage. Search results aren't paginated -- capped at 200
+    // matches, newest-registered first, with has_more always FALSE.
+    $query = trim((string) ($request->query->get('q') ?? ''));
+    if ($query !== '') {
+      $needle = mb_strtolower($query);
+      $allIds = $sids;
+      rsort($allIds);
+      $candidates = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($allIds);
+      $matches = [];
+      foreach ($allIds as $sid) {
+        $submission = $candidates[$sid] ?? NULL;
+        if (!$submission instanceof WebformSubmission) {
+          continue;
+        }
+        $data = $submission->getData();
+        $name = $this->extractName($data, $nameKeys) ?? 'Registered attendee';
+        $organization = $this->extractFirstValue($data, $orgKeys);
+        $haystack = mb_strtolower($name . ' ' . ($organization ?? ''));
+        if (!str_contains($haystack, $needle)) {
+          continue;
+        }
+        $matches[] = [
+          'sid' => (int) $submission->id(),
+          'name' => $name,
+          'organization' => $organization,
+          'registered_at' => (int) $submission->getCreatedTime(),
+        ];
+        if (count($matches) >= 200) {
+          break;
+        }
+      }
+      return new JsonResponse([
+        'participants' => $matches,
+        'total' => count($matches),
+        'has_more' => FALSE,
+      ]);
+    }
+
     // Newest-registered first. A submission id is assigned in registration
     // order, so sorting ids descending gives the same order as sorting by
     // registered_at descending, without loading every submission just to
@@ -546,9 +593,6 @@ class EventRegistrationController extends ControllerBase {
     // loading anything.
     rsort($sids);
     $pageIds = array_slice($sids, $offset, $limit);
-
-    $nameKeys = $this->nameElementKeys($webform);
-    $orgKeys = $this->organizationElementKeys($webform);
 
     $submissions = $this->entityTypeManager()->getStorage('webform_submission')->loadMultiple($pageIds);
     $participants = [];
