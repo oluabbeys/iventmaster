@@ -58,6 +58,11 @@ class InvitationQrCommands extends DrushCommands {
       return;
     }
 
+    if ($this->qrService->isDownloadOnlySubmission($sid)) {
+      $this->logger()->warning('Submission {sid} belongs to a download-only event — nothing sent.', ['sid' => $sid]);
+      return;
+    }
+
     $data   = $submission->getData();
     $fid    = $data['stamped_card_fid'] ?? NULL;
     $phone  = $data['phone_number'] ?? '';

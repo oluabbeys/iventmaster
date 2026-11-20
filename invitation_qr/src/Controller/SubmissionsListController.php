@@ -527,7 +527,10 @@ class SubmissionsListController extends ControllerBase {
         ->fetchField();
     }
 
-    $twilioEnabled = (bool) $config->get('twilio_enabled');
+    // Download-only events behave as if Twilio were off on this page: no
+    // send buttons, send/status columns, bulk bar or ad-hoc form.
+    $downloadOnly  = $this->qrService->isDownloadOnly((int) $node->id());
+    $twilioEnabled = (bool) $config->get('twilio_enabled') && !$downloadOnly;
     $build = [];
 
     // Back link.
@@ -536,16 +539,25 @@ class SubmissionsListController extends ControllerBase {
     // Event meta (type, date, venue, time).
     $build['event_meta'] = $this->buildEventMeta($node);
 
+    if ($downloadOnly) {
+      $build['download_only_notice'] = [
+        '#type'       => 'html_tag',
+        '#tag'        => 'div',
+        '#attributes' => ['class' => ['messages', 'messages--status', 'iqr-download-only']],
+        '#value'      => $this->t('⬇ <strong>Download-only event</strong> — nothing is sent to WhatsApp. Stamp the access cards, then use “Download Access Card ZIP”.'),
+      ];
+    }
+
     // Stats bar.
     $build['stats'] = [
       '#type' => 'html_tag', '#tag' => 'div', '#attributes' => ['class' => ['iqr-stats-bar']],
       'total'         => $this->statChip($this->t('Total Guests'),        $total,        'gray'),
       'stamped'       => $this->statChip($this->t('Inv. Stamped'),        $stamped,      'green'),
       'unstamped'     => $this->statChip($this->t('Not Stamped'),         $unstamped,    'orange'),
-      'unsent'        => $this->statChip($this->t('Inv. Unsent'),         $unsent,       'blue'),
+      'unsent'        => $downloadOnly ? [] : $this->statChip($this->t('Inv. Unsent'), $unsent, 'blue'),
       'accessReady'   => $this->statChip($this->t('Access Stamped'),      $accessReady,  'green'),
       'accessUnstamped' => $this->statChip($this->t('Access Not Stamped'), $accessUnstamped, 'orange'),
-      'accessUnsent'  => $this->statChip($this->t('Access Unsent'),       $accessUnsent, 'purple'),
+      'accessUnsent'  => $downloadOnly ? [] : $this->statChip($this->t('Access Unsent'), $accessUnsent, 'purple'),
       'checkedIn'     => $this->statChip($this->t('Checked In'),          $checkedIn,    'teal'),
       'notCheckedIn'  => $this->statChip($this->t('Not Checked In'),      $total - $checkedIn, 'orange'),
     ];
@@ -595,6 +607,12 @@ class SubmissionsListController extends ControllerBase {
       if ($twilioEnabled) {
         $build['adhoc'] = $this->buildAdhocForm($node);
       }
+      $build['actions']['event_settings'] = [
+        '#type'       => 'link',
+        '#title'      => $this->t('🎛 Event Card Settings'),
+        '#url'        => Url::fromRoute('invitation_qr.event_card_settings', ['node' => $node->id()]),
+        '#attributes' => ['class' => ['button'], 'title' => $this->t('Download-only mode and name on access card')],
+      ];
     }
 
     // Buttons visible to all roles with access.
@@ -1356,6 +1374,26 @@ class SubmissionsListController extends ControllerBase {
     return $build;
   }
 
+  /**
+   * Stops any send action on a download-only event.
+   *
+   * Returns a redirect back to the Guest List (with a message) when the
+   * event is download-only, or NULL to let the action carry on as normal.
+   */
+  protected function blockIfDownloadOnly(?NodeInterface $node): ?RedirectResponse {
+    if ($node && $this->qrService->isDownloadOnly((int) $node->id())) {
+      $this->messenger()->addWarning($this->t('"@title" is a download-only event — nothing is sent to WhatsApp. Untick "Download only" in Event Card Settings to send.', ['@title' => $node->label()]));
+      return $this->redirect('invitation_qr.submissions_list', ['node' => $node->id()]);
+    }
+    return NULL;
+  }
+
+  protected function blockIfDownloadOnlySubmission(int $sid): ?RedirectResponse {
+    $sub = $this->entityTypeManager()->getStorage('webform_submission')->load($sid);
+    $node = $sub ? $this->qrService->findParentNode($sub) : NULL;
+    return ($node instanceof NodeInterface) ? $this->blockIfDownloadOnly($node) : NULL;
+  }
+
   protected function buildEventMeta(NodeInterface $node): array {
     $items = [];
 
@@ -1419,6 +1457,7 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   public function sendBulkTwilio(NodeInterface $node, Request $request): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnly($node)) return $blocked;
     $config      = $this->config('invitation_qr.settings');
     $sids        = $request->query->all('sids') ?: [];
     $messageType = (string) ($request->query->get('type') ?? 'invitation');
@@ -1647,6 +1686,7 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   public function sendAllAccessCards(NodeInterface $node): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnly($node)) return $blocked;
     $queue    = \Drupal::queue(InvitationQrService::SEND_QUEUE_NAME);
     $stateKey = 'invitation_qr.send_access_total_' . $node->id();
     $doneKey  = 'invitation_qr.send_access_done_' . $node->id();
@@ -1748,6 +1788,7 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   public function sendSingleAccessCard(int $submission, Request $request): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnlySubmission($submission)) return $blocked;
     $sub = $this->entityTypeManager()->getStorage('webform_submission')->load($submission);
     if (!$sub) {
       $this->messenger()->addError($this->t('Submission not found.'));
@@ -1805,6 +1846,7 @@ class SubmissionsListController extends ControllerBase {
   // ══════════════════════════════════════════════════════════════════════════
 
   public function sendAdhocTwilio(NodeInterface $node, Request $request): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnly($node)) return $blocked;
     $config  = $this->config('invitation_qr.settings');
     $phone   = trim($request->request->get('adhoc_phone', ''));
     $sid     = (int) $request->request->get('adhoc_sid', 0);
@@ -2237,6 +2279,7 @@ class SubmissionsListController extends ControllerBase {
   }
 
   public function sendAllTwilio(NodeInterface $node): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnly($node)) return $blocked;
     $queue    = \Drupal::queue(InvitationQrService::SEND_QUEUE_NAME);
     $stateKey = 'invitation_qr.send_inv_total_' . $node->id();
     $stored   = \Drupal::state()->get($stateKey, 0);
@@ -2297,6 +2340,7 @@ class SubmissionsListController extends ControllerBase {
   }
 
   public function sendSingleTwilio(int $submission, Request $request): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnlySubmission($submission)) return $blocked;
     $sub = $this->entityTypeManager()->getStorage('webform_submission')->load($submission);
     if (!$sub) {
       $this->messenger()->addError($this->t('Submission not found.'));
@@ -2762,6 +2806,7 @@ class SubmissionsListController extends ControllerBase {
   }
 
   public function sendRsvpReminder(NodeInterface $node): RedirectResponse {
+    if ($blocked = $this->blockIfDownloadOnly($node)) return $blocked;
     $config      = $this->config('invitation_qr.settings');
     $submissions = $this->qrService->getSubmissionsForNode($node->id());
     $template    = $config->get('rsvp_reminder_message')

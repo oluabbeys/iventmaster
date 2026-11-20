@@ -151,6 +151,10 @@ class InvitationQrService {
       throw new \RuntimeException('No parent Invitation node found for submission ' . $submission->id());
     }
 
+    // Per-event "download only" mode: cards are stamped as usual but nothing
+    // is ever sent to Twilio for this event.
+    $downloadOnly = $this->isDownloadOnly((int) $node->id());
+
     // 4. Stamp INVITATION CARD (name only).
     // Guard: if already sent (twilio_sent=yes), skip re-stamping to protect
     // against the node invitation card image being changed after sending.
@@ -223,7 +227,10 @@ class InvitationQrService {
     //  - Double-send is blocked if queue runs twice
     //  - Submissions table shows correct three-state badge
     //  - Failed sends reset to 'unsent' for manual retry
-    if (!$alreadySent && $config->get('twilio_enabled')) {
+    if ($downloadOnly && !$alreadySent && $config->get('twilio_enabled')) {
+      $this->logger->info('Auto-send: skipped for sid=@sid — event is download-only.', ['@sid' => $submission->id()]);
+    }
+    if (!$downloadOnly && !$alreadySent && $config->get('twilio_enabled')) {
       $phone = $data['phone_number'] ?? '';
       if ($phone) {
         $queued = $this->queueInvitationSend((int) $submission->id());
@@ -278,13 +285,16 @@ class InvitationQrService {
     if (!$existingAccessFid && $node->hasField($accessCardField) && !$node->get($accessCardField)->isEmpty()) {
       $accessCardFile = $node->get($accessCardField)->entity;
       if ($accessCardFile) {
+        [$nameLines, $nameOptions] = $this->accessNameArgs((int) $node->id(), $data, $config);
         $stampedAccessData = $this->stampAccessCard(
           $accessCardFile->getFileUri(),
           $qrFile->getFileUri(),
           $config->get('qr_position') ?: 'bottom-right',
           (int) ($config->get('qr_margin') ?: 20),
           (int) ($config->get('qr_offset_x') ?? 0),
-          (int) ($config->get('qr_offset_y') ?? 0)
+          (int) ($config->get('qr_offset_y') ?? 0),
+          $nameLines,
+          $nameOptions
         );
 
         $accessDir  = 'public://invitation-access-cards';
@@ -342,7 +352,7 @@ class InvitationQrService {
     return $pngData;
   }
 
-  public function stampAccessCard(string $cardUri, string $qrUri, string $qrPosition, int $qrMargin, int $qrOffsetX = 0, int $qrOffsetY = 0): string {
+  public function stampAccessCard(string $cardUri, string $qrUri, string $qrPosition, int $qrMargin, int $qrOffsetX = 0, int $qrOffsetY = 0, array $nameLines = [], array $nameOptions = []): string {
     $cardPath = $this->fileSystem->realpath($cardUri);
     $qrPath   = $this->fileSystem->realpath($qrUri);
 
@@ -378,6 +388,13 @@ class InvitationQrService {
         imagecopy($cardImg, $qrImg, $dx, $dy, 0, 0, $qrW, $qrH);
         imagedestroy($qrImg);
       }
+    }
+
+    // Optional guest name (1–2 lines). Only passed when the event has
+    // "Print name on access card" on — otherwise this is a no-op and the
+    // access card is exactly the QR-only card it always was.
+    if (!empty($nameLines)) {
+      $this->overlayNameLines($cardImg, $nameLines, $cardW, $cardH, $nameOptions);
     }
 
     ob_start();
@@ -438,6 +455,279 @@ class InvitationQrService {
     if ($pos === 'bottom-right')  return [$cW - $tW - 40, $cH - 60];
     if ($pos === 'bottom-center') return [($cW - $tW) / 2, $cH - 60];
     return [($cW - $tW) / 2, $cH / 2];
+  }
+
+  // ── Access card name (two lines) ──────────────────────────────────────────
+
+  /**
+   * Draws one or two lines of text (e.g. a guest's name) onto a card image.
+   *
+   * Used only by stampAccessCard() when the event has "Print name on access
+   * card" switched on — the invitation-card overlayName() above is untouched.
+   * Each line is measured, and the font is stepped down (never below
+   * min_font_size) until the widest line fits inside max_width_pct of the
+   * card, so long names stay inside the design.
+   *
+   * @param resource|\GdImage $cardImg
+   * @param string[] $lines   1 or 2 non-empty lines.
+   * @param array    $opts    Per-event settings (see eventSettingsDefaults())
+   *                          plus 'font_path_resolved'.
+   */
+  protected function overlayNameLines($cardImg, array $lines, int $cardW, int $cardH, array $opts): void {
+    $lines = array_values(array_filter(array_map('trim', $lines), 'strlen'));
+    if (empty($lines)) {
+      return;
+    }
+
+    [$r, $g, $b] = self::hexToRgb((string) ($opts['color'] ?? '#000000'));
+    $color    = imagecolorallocate($cardImg, $r, $g, $b);
+    $fontPath = (string) ($opts['font_path_resolved'] ?? '');
+    $position = (string) ($opts['position'] ?? 'center');
+    $offsetX  = (int) ($opts['offset_x'] ?? 0);
+    $offsetY  = (int) ($opts['offset_y'] ?? 0);
+    $margin   = 40;
+
+    // No usable TrueType font — fall back to GD's built-in font so the card
+    // is still produced (tiny text, but never a failed stamp).
+    if (!$fontPath || !file_exists($fontPath)) {
+      $this->logger->warning('Access card name: no TTF font found — using GD built-in font. Set a font in Event Card Settings.');
+      $gdFont = 5;
+      $lineH  = imagefontheight($gdFont) + 4;
+      $blockH = $lineH * count($lines);
+      $top    = $this->nameBlockTop($position, $cardH, $blockH, $margin) + $offsetY;
+      foreach ($lines as $i => $line) {
+        $w = strlen($line) * imagefontwidth($gdFont);
+        $x = $this->nameLineX($position, $cardW, $w, $margin) + $offsetX;
+        imagestring($cardImg, $gdFont, (int) $x, (int) ($top + $i * $lineH), $line, $color);
+      }
+      return;
+    }
+
+    $size     = max(6, (int) ($opts['font_size'] ?? 48));
+    $minSize  = max(6, min($size, (int) ($opts['min_font_size'] ?? 20)));
+    $maxWPct  = max(10, min(100, (int) ($opts['max_width_pct'] ?? 80)));
+    $maxW     = $cardW * $maxWPct / 100;
+    $spacing  = max(0.8, min(3.0, (float) ($opts['line_spacing'] ?? 1.25)));
+
+    // Step the font down until the widest line fits.
+    while ($size > $minSize && $this->widestLine($lines, $size, $fontPath) > $maxW) {
+      $size--;
+    }
+    if ($this->widestLine($lines, $size, $fontPath) > $maxW) {
+      $this->logger->notice('Access card name "@n" is wider than the allowed area even at the minimum font size.', ['@n' => implode(' / ', $lines)]);
+    }
+
+    // Use fixed metrics ("Ag") rather than per-line boxes so both lines sit
+    // on an even rhythm whether or not they contain ascenders/descenders.
+    $m       = imagettfbbox($size, 0, $fontPath, 'Ag');
+    $ascent  = abs($m[7]);
+    $descent = abs($m[1]);
+    $advance = (int) round(($ascent + $descent) * $spacing);
+    $blockH  = $ascent + $descent + $advance * (count($lines) - 1);
+    $top     = $this->nameBlockTop($position, $cardH, $blockH, $margin) + $offsetY;
+
+    $shadow = !empty($opts['shadow']) ? imagecolorallocatealpha($cardImg, 0, 0, 0, 80) : NULL;
+
+    foreach ($lines as $i => $line) {
+      $bbox     = imagettfbbox($size, 0, $fontPath, $line);
+      $w        = $bbox[2] - $bbox[0];
+      $x        = $this->nameLineX($position, $cardW, $w, $margin) + $offsetX - $bbox[0];
+      $baseline = $top + $ascent + $i * $advance;
+      if ($shadow !== NULL) {
+        imagettftext($cardImg, $size, 0, (int) $x + 2, (int) $baseline + 2, $shadow, $fontPath, $line);
+      }
+      imagettftext($cardImg, $size, 0, (int) $x, (int) $baseline, $color, $fontPath, $line);
+    }
+  }
+
+  protected function widestLine(array $lines, int $size, string $fontPath): int {
+    $max = 0;
+    foreach ($lines as $line) {
+      $b   = imagettfbbox($size, 0, $fontPath, $line);
+      $max = max($max, $b[2] - $b[0]);
+    }
+    return $max;
+  }
+
+  /** Top Y of the text block for the chosen anchor (same presets as namePosition()). */
+  protected function nameBlockTop(string $pos, int $cH, int $blockH, int $margin): int {
+    if (str_starts_with($pos, 'top'))    return $margin;
+    if (str_starts_with($pos, 'bottom')) return $cH - $margin - $blockH;
+    return (int) round(($cH - $blockH) / 2);
+  }
+
+  /** Left X of one line: lines are left-, right- or centre-aligned to match the anchor. */
+  protected function nameLineX(string $pos, int $cW, int $lineW, int $margin): int {
+    if (str_ends_with($pos, 'left'))  return $margin;
+    if (str_ends_with($pos, 'right')) return $cW - $margin - $lineW;
+    return (int) round(($cW - $lineW) / 2);
+  }
+
+  public static function hexToRgb(string $hex): array {
+    $hex = ltrim(trim($hex), '#');
+    if (strlen($hex) === 3) {
+      $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+    }
+    if (!preg_match('/^[0-9a-fA-F]{6}$/', $hex)) {
+      return [0, 0, 0];
+    }
+    return [hexdec(substr($hex, 0, 2)), hexdec(substr($hex, 2, 2)), hexdec(substr($hex, 4, 2))];
+  }
+
+  // ── Per-event settings (download-only mode + access-card name) ────────────
+  //
+  // Stored in State, one entry per Invitation node, so no node fields or
+  // schema changes are needed. An event with no saved settings gets the
+  // defaults below — i.e. the original WhatsApp workflow, no name on the
+  // access card — so existing events behave exactly as before.
+
+  const EVENT_SETTINGS_PREFIX = 'invitation_qr.event_settings.';
+
+  public static function eventSettingsDefaults(): array {
+    return [
+      // TRUE = never send anything to Twilio for this event; cards are only
+      // stamped and downloaded (single or ZIP).
+      'download_only'       => FALSE,
+      // Print the guest's name on the access card under/around the QR.
+      'access_name_enabled' => FALSE,
+      // 'split'  = take one webform field and break it over two lines
+      //            (at a "|" if the editor typed one, else the space nearest
+      //            the middle).
+      // 'fields' = line 1 and line 2 each come from their own webform field.
+      'name_source'         => 'split',
+      'line1_field'         => 'name',
+      'line2_field'         => '',
+      'uppercase'           => FALSE,
+      'font_path'           => '',
+      'font_size'           => 48,
+      'min_font_size'       => 20,
+      'line_spacing'        => 1.25,
+      'max_width_pct'       => 80,
+      'color'               => '#000000',
+      'shadow'              => FALSE,
+      'position'            => 'center',
+      'offset_x'            => 0,
+      'offset_y'            => 0,
+    ];
+  }
+
+  public function getEventSettings(int $nid): array {
+    $saved = \Drupal::state()->get(self::EVENT_SETTINGS_PREFIX . $nid, []);
+    return array_merge(self::eventSettingsDefaults(), is_array($saved) ? $saved : []);
+  }
+
+  public function saveEventSettings(int $nid, array $settings): void {
+    $clean = array_intersect_key($settings, self::eventSettingsDefaults());
+    \Drupal::state()->set(self::EVENT_SETTINGS_PREFIX . $nid, $clean);
+  }
+
+  public function isDownloadOnly(?int $nid): bool {
+    return $nid ? !empty($this->getEventSettings($nid)['download_only']) : FALSE;
+  }
+
+  /** Download-only check for a guest, via their parent Invitation node. */
+  public function isDownloadOnlySubmission(int $sid): bool {
+    $sub = $this->entityTypeManager->getStorage('webform_submission')->load($sid);
+    if (!$sub) {
+      return FALSE;
+    }
+    $node = $this->findParentNode($sub);
+    return $node ? $this->isDownloadOnly((int) $node->id()) : FALSE;
+  }
+
+  /**
+   * Builds the 1–2 name lines for a guest's access card.
+   *
+   * @return string[]
+   */
+  public function buildAccessNameLines(array $data, array $settings): array {
+    $val = function (string $key) use ($data): string {
+      if ($key === '' || !isset($data[$key])) return '';
+      $v = $data[$key];
+      if (is_array($v)) {
+        // Composite name elements (title/first/last…) — join the parts.
+        $v = implode(' ', array_filter(array_map('strval', $v), 'strlen'));
+      }
+      return trim(preg_replace('/\s+/u', ' ', (string) $v));
+    };
+
+    if (($settings['name_source'] ?? 'split') === 'fields') {
+      $lines = [$val((string) $settings['line1_field']), $val((string) $settings['line2_field'])];
+    }
+    else {
+      $lines = self::splitNameIntoTwoLines($val((string) ($settings['line1_field'] ?: 'name')));
+    }
+
+    $lines = array_values(array_filter($lines, 'strlen'));
+    if (!empty($settings['uppercase'])) {
+      $lines = array_map(fn($l) => mb_strtoupper($l, 'UTF-8'), $lines);
+    }
+    return $lines;
+  }
+
+  /**
+   * Splits one name into at most two balanced lines.
+   *
+   * "Mr Tunde Bakare | Mrs Funmi Bakare" → split at the "|" (editor's choice).
+   * "Oluseyi Adelegan"                   → ["Oluseyi", "Adelegan"].
+   * "Chief Mrs Adebayo-Okonkwo"          → space nearest the middle.
+   * A single word stays on one line.
+   */
+  public static function splitNameIntoTwoLines(string $name): array {
+    $name = trim($name);
+    if ($name === '') return [];
+
+    foreach (["\n", '|'] as $sep) {
+      if (str_contains($name, $sep)) {
+        [$a, $b] = array_map('trim', explode($sep, $name, 2));
+        return array_values(array_filter([$a, $b], 'strlen'));
+      }
+    }
+
+    $words = preg_split('/\s+/u', $name);
+    if (count($words) < 2) return [$name];
+
+    $total = mb_strlen($name);
+    $best  = 1;
+    $bestDiff = PHP_INT_MAX;
+    for ($i = 1; $i < count($words); $i++) {
+      $left = mb_strlen(implode(' ', array_slice($words, 0, $i)));
+      $diff = abs($left - ($total - $left - 1));
+      if ($diff < $bestDiff) {
+        $bestDiff = $diff;
+        $best = $i;
+      }
+    }
+    return [implode(' ', array_slice($words, 0, $best)), implode(' ', array_slice($words, $best))];
+  }
+
+  /**
+   * Font for the access-card name: event override → global name font →
+   * font bundled with this module.
+   */
+  public function resolveAccessFontPath(array $settings, $config): string {
+    $candidates = [
+      (string) ($settings['font_path'] ?? ''),
+      (string) ($config->get('name_font_path') ?? ''),
+      DRUPAL_ROOT . '/' . \Drupal::service('extension.list.module')->getPath('invitation_qr') . '/fonts/DejaVuSans-Bold.ttf',
+    ];
+    foreach ($candidates as $path) {
+      if ($path !== '' && is_file($path)) return $path;
+    }
+    return '';
+  }
+
+  /**
+   * Name lines + drawing options for an access card, or [[], []] when the
+   * event doesn't print names on access cards.
+   */
+  public function accessNameArgs(int $nid, array $data, $config): array {
+    $settings = $this->getEventSettings($nid);
+    if (empty($settings['access_name_enabled'])) {
+      return [[], []];
+    }
+    $settings['font_path_resolved'] = $this->resolveAccessFontPath($settings, $config);
+    return [$this->buildAccessNameLines($data, $settings), $settings];
   }
 
   // ── Date formatter ────────────────────────────────────────────────────────
@@ -968,6 +1258,10 @@ class InvitationQrService {
    *  4. Free-form fallback (only within existing 24hr session).
    */
   public function sendInvitationCard(string $phone, string $guestName, string $cardUrl, object $node, $config, array $submissionData = []): bool {
+    if ($this->isDownloadOnly((int) $node->id())) {
+      $this->logger->warning('sendInvitationCard blocked — node @nid is download-only.', ['@nid' => $node->id()]);
+      return FALSE;
+    }
     $templates = \Drupal\invitation_qr\Controller\TemplateManagerController::getTemplates();
 
     // Resolve template ID. NOTE: field_invitation_template is a Webform
@@ -1033,6 +1327,10 @@ class InvitationQrService {
    *     longer a configurable setting).
    */
   public function sendAccessCard(string $phone, string $guestName, string $cardUrl, object $node, $config, array $submissionData = []): bool {
+    if ($this->isDownloadOnly((int) $node->id())) {
+      $this->logger->warning('sendAccessCard blocked — node @nid is download-only.', ['@nid' => $node->id()]);
+      return FALSE;
+    }
     $templates = \Drupal\invitation_qr\Controller\TemplateManagerController::getTemplates();
 
     // Resolve template ID.
@@ -1577,6 +1875,12 @@ class InvitationQrService {
    * Returns FALSE if job was skipped (already queued or sent).
    */
   public function queueInvitationSend(int $sid): bool {
+    // Download-only events never send anything.
+    if ($this->isDownloadOnlySubmission($sid)) {
+      $this->logger->info('Inv send skipped for sid=@sid — event is download-only.', ['@sid' => $sid]);
+      return FALSE;
+    }
+
     // Validate phone number before queuing — blocks empty/invalid numbers.
     $phone = \Drupal::database()->select('webform_submission_data', 'w')
       ->fields('w', ['value'])
@@ -1618,6 +1922,12 @@ class InvitationQrService {
    * Idempotent — if state is already 'sending' or 'sent', does nothing.
    */
   public function queueAccessCardSend(int $sid): bool {
+    // Download-only events never send anything.
+    if ($this->isDownloadOnlySubmission($sid)) {
+      $this->logger->info('Access send skipped for sid=@sid — event is download-only.', ['@sid' => $sid]);
+      return FALSE;
+    }
+
     // Validate phone number before queuing — blocks empty/invalid numbers.
     $phone = \Drupal::database()->select('webform_submission_data', 'w')
       ->fields('w', ['value'])
@@ -1709,6 +2019,15 @@ class InvitationQrService {
     $config = $this->configFactory->get('invitation_qr.settings');
     $data   = $sub->getData();
     $node   = $this->findParentNode($sub);
+
+    // Item queued before the event was switched to download-only — drop it
+    // and roll the guest back to 'unsent' rather than sending.
+    if ($node && $this->isDownloadOnly((int) $node->id())) {
+      $this->logger->info('Send queue: sid=@sid dropped — event is download-only.', ['@sid' => $sid]);
+      if ($type === 'invitation') $this->resetInvSendState($sid);
+      else $this->resetAccessSendState($sid);
+      return;
+    }
 
     // Daily WhatsApp sending-rate throttle: if we're at the cap for the
     // current rolling 24h window, stop here WITHOUT marking this guest as

@@ -290,3 +290,28 @@ invitation_qr.download_csv:
   requirements:
     _permission: 'access invitation qr submissions'
     node: \d+
+invitation_qr.event_card_settings:
+  path: '/admin/invitation-qr/event-settings/{node}'
+  defaults:
+    _form: '\Drupal\invitation_qr\Form\EventCardSettingsForm'
+    _title_callback: '\Drupal\invitation_qr\Form\EventCardSettingsForm::title'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+  options:
+    parameters:
+      node:
+        type: 'entity:node'
+
+invitation_qr.access_card_preview:
+  path: '/admin/invitation-qr/event-settings/{node}/preview'
+  defaults:
+    _controller: '\Drupal\invitation_qr\Controller\AccessCardPreviewController::preview'
+  requirements:
+    _permission: 'administer invitation qr'
+    node: \d+
+  options:
+    no_cache: TRUE
+    parameters:
+      node:
+        type: 'entity:node'
