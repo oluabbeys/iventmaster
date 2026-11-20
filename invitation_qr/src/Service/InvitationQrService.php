@@ -286,16 +286,23 @@ class InvitationQrService {
       $accessCardFile = $node->get($accessCardField)->entity;
       if ($accessCardFile) {
         [$nameLines, $nameOptions] = $this->accessNameArgs((int) $node->id(), $data, $config);
-        $stampedAccessData = $this->stampAccessCard(
-          $accessCardFile->getFileUri(),
-          $qrFile->getFileUri(),
-          $config->get('qr_position') ?: 'bottom-right',
-          (int) ($config->get('qr_margin') ?: 20),
-          (int) ($config->get('qr_offset_x') ?? 0),
-          (int) ($config->get('qr_offset_y') ?? 0),
-          $nameLines,
-          $nameOptions
-        );
+        [$qrPos, $qrMargin, $qrOffX, $qrOffY] = $this->accessQrArgs((int) $node->id(), $config);
+        [$accessQrUri, $accessQrTmp] = $this->accessQrFile($qrFile->getFileUri(), $verifyUrl, (int) $node->id(), $config);
+        try {
+          $stampedAccessData = $this->stampAccessCard(
+            $accessCardFile->getFileUri(),
+            $accessQrUri,
+            $qrPos,
+            $qrMargin,
+            $qrOffX,
+            $qrOffY,
+            $nameLines,
+            $nameOptions
+          );
+        }
+        finally {
+          if ($accessQrTmp) @unlink($this->fileSystem->realpath($accessQrUri));
+        }
 
         $accessDir  = 'public://invitation-access-cards';
         $this->fileSystem->prepareDirectory($accessDir, FileSystemInterface::CREATE_DIRECTORY);
@@ -464,89 +471,112 @@ class InvitationQrService {
    *
    * Used only by stampAccessCard() when the event has "Print name on access
    * card" switched on — the invitation-card overlayName() above is untouched.
-   * Each line is measured, and the font is stepped down (never below
-   * min_font_size) until the widest line fits inside max_width_pct of the
-   * card, so long names stay inside the design.
+   *
+   * Line 1 uses font_size / font_path_resolved / color. Line 2 can have its
+   * own font (e.g. regular under a bold line 1), a size as a % of line 1,
+   * and its own colour. If the widest line is wider than max_width_pct of
+   * the card, both lines are scaled down together (line 1 never below
+   * min_font_size) so long names stay inside the design.
    *
    * @param resource|\GdImage $cardImg
    * @param string[] $lines   1 or 2 non-empty lines.
    * @param array    $opts    Per-event settings (see eventSettingsDefaults())
-   *                          plus 'font_path_resolved'.
+   *                          plus 'font_path_resolved' and
+   *                          'line2_font_path_resolved'.
    */
   protected function overlayNameLines($cardImg, array $lines, int $cardW, int $cardH, array $opts): void {
     $lines = array_values(array_filter(array_map('trim', $lines), 'strlen'));
     if (empty($lines)) {
       return;
     }
+    $lines = array_slice($lines, 0, 2);
 
-    [$r, $g, $b] = self::hexToRgb((string) ($opts['color'] ?? '#000000'));
-    $color    = imagecolorallocate($cardImg, $r, $g, $b);
-    $fontPath = (string) ($opts['font_path_resolved'] ?? '');
     $position = (string) ($opts['position'] ?? 'center');
     $offsetX  = (int) ($opts['offset_x'] ?? 0);
     $offsetY  = (int) ($opts['offset_y'] ?? 0);
     $margin   = 40;
 
+    [$r, $g, $b] = self::hexToRgb((string) ($opts['color'] ?? '#000000'));
+    $color1 = imagecolorallocate($cardImg, $r, $g, $b);
+    $c2hex  = trim((string) ($opts['line2_color'] ?? ''));
+    if ($c2hex !== '') {
+      [$r, $g, $b] = self::hexToRgb($c2hex);
+    }
+    $color2 = imagecolorallocate($cardImg, $r, $g, $b);
+
+    $font1 = (string) ($opts['font_path_resolved'] ?? '');
+    $font2 = (string) ($opts['line2_font_path_resolved'] ?? '') ?: $font1;
+
     // No usable TrueType font — fall back to GD's built-in font so the card
     // is still produced (tiny text, but never a failed stamp).
-    if (!$fontPath || !file_exists($fontPath)) {
+    if (!$font1 || !is_file($font1) || !is_file($font2)) {
       $this->logger->warning('Access card name: no TTF font found — using GD built-in font. Set a font in Event Card Settings.');
       $gdFont = 5;
       $lineH  = imagefontheight($gdFont) + 4;
-      $blockH = $lineH * count($lines);
-      $top    = $this->nameBlockTop($position, $cardH, $blockH, $margin) + $offsetY;
+      $top    = $this->nameBlockTop($position, $cardH, $lineH * count($lines), $margin) + $offsetY;
       foreach ($lines as $i => $line) {
         $w = strlen($line) * imagefontwidth($gdFont);
         $x = $this->nameLineX($position, $cardW, $w, $margin) + $offsetX;
-        imagestring($cardImg, $gdFont, (int) $x, (int) ($top + $i * $lineH), $line, $color);
+        imagestring($cardImg, $gdFont, (int) $x, (int) ($top + $i * $lineH), $line, $i ? $color2 : $color1);
       }
       return;
     }
 
-    $size     = max(6, (int) ($opts['font_size'] ?? 48));
-    $minSize  = max(6, min($size, (int) ($opts['min_font_size'] ?? 20)));
-    $maxWPct  = max(10, min(100, (int) ($opts['max_width_pct'] ?? 80)));
-    $maxW     = $cardW * $maxWPct / 100;
+    $size1    = max(6.0, (float) ($opts['font_size'] ?? 48));
+    $minSize  = max(6.0, min($size1, (float) ($opts['min_font_size'] ?? 20)));
+    $ratio2   = max(0.2, min(2.0, ((float) ($opts['line2_size_pct'] ?? 100)) / 100));
+    $maxW     = $cardW * max(10, min(100, (int) ($opts['max_width_pct'] ?? 80))) / 100;
     $spacing  = max(0.8, min(3.0, (float) ($opts['line_spacing'] ?? 1.25)));
+    $fonts    = [$font1, $font2];
 
-    // Step the font down until the widest line fits.
-    while ($size > $minSize && $this->widestLine($lines, $size, $fontPath) > $maxW) {
-      $size--;
+    // Per-line size for a given line-1 size.
+    $sizesFor = fn(float $s1) => [$s1, max(6.0, round($s1 * $ratio2, 1))];
+    $widest = function (float $s1) use ($lines, $fonts, $sizesFor): int {
+      $sizes = $sizesFor($s1);
+      $max = 0;
+      foreach ($lines as $i => $line) {
+        $bb  = imagettfbbox($sizes[$i], 0, $fonts[$i], $line);
+        $max = max($max, $bb[2] - $bb[0]);
+      }
+      return $max;
+    };
+
+    // Scale both lines down together until the widest one fits.
+    while ($size1 > $minSize && $widest($size1) > $maxW) {
+      $size1 = max($minSize, $size1 - 1);
     }
-    if ($this->widestLine($lines, $size, $fontPath) > $maxW) {
+    if ($widest($size1) > $maxW) {
       $this->logger->notice('Access card name "@n" is wider than the allowed area even at the minimum font size.', ['@n' => implode(' / ', $lines)]);
     }
+    $sizes = $sizesFor($size1);
 
-    // Use fixed metrics ("Ag") rather than per-line boxes so both lines sit
-    // on an even rhythm whether or not they contain ascenders/descenders.
-    $m       = imagettfbbox($size, 0, $fontPath, 'Ag');
-    $ascent  = abs($m[7]);
-    $descent = abs($m[1]);
-    $advance = (int) round(($ascent + $descent) * $spacing);
-    $blockH  = $ascent + $descent + $advance * (count($lines) - 1);
-    $top     = $this->nameBlockTop($position, $cardH, $blockH, $margin) + $offsetY;
+    // Fixed per-line metrics ("Ag") so lines sit on an even rhythm whether
+    // or not they contain ascenders/descenders.
+    $asc = $desc = [];
+    foreach ($lines as $i => $line) {
+      $m        = imagettfbbox($sizes[$i], 0, $fonts[$i], 'Ag');
+      $asc[$i]  = abs($m[7]);
+      $desc[$i] = abs($m[1]);
+    }
+    // Baseline-to-baseline gap between line 1 and line 2.
+    $gap    = count($lines) > 1 ? (int) round(($desc[0] + $asc[1]) * $spacing) : 0;
+    $blockH = $asc[0] + $gap + $desc[count($lines) - 1];
+    $top    = $this->nameBlockTop($position, $cardH, $blockH, $margin) + $offsetY;
 
-    $shadow = !empty($opts['shadow']) ? imagecolorallocatealpha($cardImg, 0, 0, 0, 80) : NULL;
+    $shadow   = !empty($opts['shadow']) ? imagecolorallocatealpha($cardImg, 0, 0, 0, 80) : NULL;
+    $baseline = $top + $asc[0];
 
     foreach ($lines as $i => $line) {
-      $bbox     = imagettfbbox($size, 0, $fontPath, $line);
-      $w        = $bbox[2] - $bbox[0];
-      $x        = $this->nameLineX($position, $cardW, $w, $margin) + $offsetX - $bbox[0];
-      $baseline = $top + $ascent + $i * $advance;
-      if ($shadow !== NULL) {
-        imagettftext($cardImg, $size, 0, (int) $x + 2, (int) $baseline + 2, $shadow, $fontPath, $line);
+      if ($i > 0) {
+        $baseline += $gap;
       }
-      imagettftext($cardImg, $size, 0, (int) $x, (int) $baseline, $color, $fontPath, $line);
+      $bbox = imagettfbbox($sizes[$i], 0, $fonts[$i], $line);
+      $x    = $this->nameLineX($position, $cardW, $bbox[2] - $bbox[0], $margin) + $offsetX - $bbox[0];
+      if ($shadow !== NULL) {
+        imagettftext($cardImg, $sizes[$i], 0, (int) $x + 2, (int) $baseline + 2, $shadow, $fonts[$i], $line);
+      }
+      imagettftext($cardImg, $sizes[$i], 0, (int) $x, (int) $baseline, $i ? $color2 : $color1, $fonts[$i], $line);
     }
-  }
-
-  protected function widestLine(array $lines, int $size, string $fontPath): int {
-    $max = 0;
-    foreach ($lines as $line) {
-      $b   = imagettfbbox($size, 0, $fontPath, $line);
-      $max = max($max, $b[2] - $b[0]);
-    }
-    return $max;
   }
 
   /** Top Y of the text block for the chosen anchor (same presets as namePosition()). */
@@ -595,19 +625,37 @@ class InvitationQrService {
       //            the middle).
       // 'fields' = line 1 and line 2 each come from their own webform field.
       'name_source'         => 'split',
+      // How 'split' breaks one name: 'surname' = last word on line 2
+      // ("Dr Dasfwang" / "Data"); 'balanced' = space nearest the middle.
+      // A "|" typed in the name always wins.
+      'split_mode'          => 'surname',
       'line1_field'         => 'name',
       'line2_field'         => '',
       'uppercase'           => FALSE,
+      // Line 1 (bold by default).
       'font_path'           => '',
-      'font_size'           => 48,
-      'min_font_size'       => 20,
-      'line_spacing'        => 1.25,
-      'max_width_pct'       => 80,
+      'font_size'           => 72,
+      'min_font_size'       => 28,
       'color'               => '#000000',
+      // Line 2 (regular by default), sized as a % of line 1. Blank colour =
+      // same as line 1.
+      'line2_font_path'     => '',
+      'line2_size_pct'      => 70,
+      'line2_color'         => '',
+      'line_spacing'        => 1.1,
+      'max_width_pct'       => 85,
       'shadow'              => FALSE,
       'position'            => 'center',
       'offset_x'            => 0,
       'offset_y'            => 0,
+      // Optional per-event QR placement for the access card. Off = use the
+      // global QR settings, exactly as before.
+      'qr_override'         => FALSE,
+      'qr_position'         => 'bottom-right',
+      'qr_size'             => 150,
+      'qr_margin'           => 20,
+      'qr_offset_x'         => 0,
+      'qr_offset_y'         => 0,
     ];
   }
 
@@ -655,7 +703,10 @@ class InvitationQrService {
       $lines = [$val((string) $settings['line1_field']), $val((string) $settings['line2_field'])];
     }
     else {
-      $lines = self::splitNameIntoTwoLines($val((string) ($settings['line1_field'] ?: 'name')));
+      $lines = self::splitNameIntoTwoLines(
+        $val((string) ($settings['line1_field'] ?: 'name')),
+        (string) ($settings['split_mode'] ?? 'surname')
+      );
     }
 
     $lines = array_values(array_filter($lines, 'strlen'));
@@ -666,14 +717,14 @@ class InvitationQrService {
   }
 
   /**
-   * Splits one name into at most two balanced lines.
+   * Splits one name into at most two lines.
    *
    * "Mr Tunde Bakare | Mrs Funmi Bakare" → split at the "|" (editor's choice).
-   * "Oluseyi Adelegan"                   → ["Oluseyi", "Adelegan"].
-   * "Chief Mrs Adebayo-Okonkwo"          → space nearest the middle.
+   * mode 'surname':  "Dr Dasfwang Data"  → ["Dr Dasfwang", "Data"].
+   * mode 'balanced': "Chief Mrs Adebayo-Okonkwo" → space nearest the middle.
    * A single word stays on one line.
    */
-  public static function splitNameIntoTwoLines(string $name): array {
+  public static function splitNameIntoTwoLines(string $name, string $mode = 'balanced'): array {
     $name = trim($name);
     if ($name === '') return [];
 
@@ -686,6 +737,11 @@ class InvitationQrService {
 
     $words = preg_split('/\s+/u', $name);
     if (count($words) < 2) return [$name];
+
+    if ($mode === 'surname') {
+      $last = array_pop($words);
+      return [implode(' ', $words), $last];
+    }
 
     $total = mb_strlen($name);
     $best  = 1;
@@ -702,19 +758,63 @@ class InvitationQrService {
   }
 
   /**
-   * Font for the access-card name: event override → global name font →
-   * font bundled with this module.
+   * Font for access-card name line 1: event font → bundled Source Sans 3
+   * Bold. (The global invitation name font is deliberately NOT used here,
+   * so access cards look the same on every server.)
    */
   public function resolveAccessFontPath(array $settings, $config): string {
-    $candidates = [
-      (string) ($settings['font_path'] ?? ''),
-      (string) ($config->get('name_font_path') ?? ''),
-      DRUPAL_ROOT . '/' . \Drupal::service('extension.list.module')->getPath('invitation_qr') . '/fonts/DejaVuSans-Bold.ttf',
-    ];
+    return $this->firstExistingFont([(string) ($settings['font_path'] ?? ''), $this->bundledFont('SourceSans3-Bold.ttf')]);
+  }
+
+  /** Font for line 2: event line-2 font → bundled Source Sans 3 Regular. */
+  public function resolveAccessLine2FontPath(array $settings): string {
+    return $this->firstExistingFont([(string) ($settings['line2_font_path'] ?? ''), $this->bundledFont('SourceSans3-Regular.ttf')]);
+  }
+
+  protected function bundledFont(string $file): string {
+    return DRUPAL_ROOT . '/' . \Drupal::service('extension.list.module')->getPath('invitation_qr') . '/fonts/' . $file;
+  }
+
+  protected function firstExistingFont(array $candidates): string {
     foreach ($candidates as $path) {
       if ($path !== '' && is_file($path)) return $path;
     }
     return '';
+  }
+
+  /**
+   * QR placement for an event's access cards:
+   * [position, margin, offsetX, offsetY, size]. Uses the global settings
+   * unless the event has "Override QR placement" on.
+   */
+  public function accessQrArgs(int $nid, $config): array {
+    $s = $this->getEventSettings($nid);
+    if (!empty($s['qr_override'])) {
+      return [(string) $s['qr_position'], (int) $s['qr_margin'], (int) $s['qr_offset_x'], (int) $s['qr_offset_y'], max(50, (int) $s['qr_size'])];
+    }
+    return [
+      $config->get('qr_position') ?: 'bottom-right',
+      (int) ($config->get('qr_margin') ?: 20),
+      (int) ($config->get('qr_offset_x') ?? 0),
+      (int) ($config->get('qr_offset_y') ?? 0),
+      (int) ($config->get('qr_size') ?: 150),
+    ];
+  }
+
+  /**
+   * QR file to stamp on the access card. Normally the guest's saved QR; when
+   * the event overrides the QR size, a same-content QR at that size is
+   * written to temporary:// (caller deletes it). Returns [uri, isTemporary].
+   */
+  public function accessQrFile(string $savedQrUri, string $content, int $nid, $config): array {
+    $s = $this->getEventSettings($nid);
+    $globalSize = (int) ($config->get('qr_size') ?: 150);
+    if (empty($s['qr_override']) || (int) $s['qr_size'] === $globalSize) {
+      return [$savedQrUri, FALSE];
+    }
+    $uri = 'temporary://iqr-' . $nid . '-' . bin2hex(random_bytes(6)) . '.png';
+    file_put_contents($uri, $this->generateQrPng($content, max(50, (int) $s['qr_size'])));
+    return [$uri, TRUE];
   }
 
   /**
@@ -726,7 +826,8 @@ class InvitationQrService {
     if (empty($settings['access_name_enabled'])) {
       return [[], []];
     }
-    $settings['font_path_resolved'] = $this->resolveAccessFontPath($settings, $config);
+    $settings['font_path_resolved']       = $this->resolveAccessFontPath($settings, $config);
+    $settings['line2_font_path_resolved'] = $this->resolveAccessLine2FontPath($settings);
     return [$this->buildAccessNameLines($data, $settings), $settings];
   }
 

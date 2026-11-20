@@ -51,37 +51,24 @@ class AccessCardPreviewController extends ControllerBase {
       if (!empty($d['name'])) { $data = $d; break; }
     }
 
-    $settings = $this->qrService->getEventSettings((int) $node->id());
-    $settings['font_path_resolved'] = $this->qrService->resolveAccessFontPath($settings, $config);
-    $lines = !empty($settings['access_name_enabled'])
-      ? $this->qrService->buildAccessNameLines($data, $settings)
-      : [];
+    $nid = (int) $node->id();
+    [$lines, $nameOptions] = $this->qrService->accessNameArgs($nid, $data, $config);
+    [$qrPos, $qrMargin, $qrOffX, $qrOffY, $qrSize] = $this->qrService->accessQrArgs($nid, $config);
 
-    $qrUri = 'temporary://iqr-preview-' . $node->id() . '-' . bin2hex(random_bytes(4)) . '.png';
+    $qrUri = 'temporary://iqr-preview-' . $nid . '-' . bin2hex(random_bytes(4)) . '.png';
     try {
-      $qrPng = $this->qrService->generateQrPng(
+      file_put_contents($qrUri, $this->qrService->generateQrPng(
         \Drupal::request()->getSchemeAndHttpHost() . '/verify-guest?token=PREVIEW',
-        (int) ($config->get('qr_size') ?: 150)
-      );
-      file_put_contents($this->fileSystem->realpath('temporary://') . '/' . basename($qrUri), $qrPng);
-
-      $png = $this->qrService->stampAccessCard(
-        $cardUri,
-        $qrUri,
-        $config->get('qr_position') ?: 'bottom-right',
-        (int) ($config->get('qr_margin') ?: 20),
-        (int) ($config->get('qr_offset_x') ?? 0),
-        (int) ($config->get('qr_offset_y') ?? 0),
-        $lines,
-        $settings
-      );
+        $qrSize
+      ));
+      $png = $this->qrService->stampAccessCard($cardUri, $qrUri, $qrPos, $qrMargin, $qrOffX, $qrOffY, $lines, $nameOptions);
     }
     catch (\Throwable $e) {
       return $this->placeholder('Preview failed: ' . $e->getMessage());
     }
     finally {
-      $tmp = $this->fileSystem->realpath('temporary://') . '/' . basename($qrUri);
-      if (is_file($tmp)) @unlink($tmp);
+      $tmp = $this->fileSystem->realpath($qrUri);
+      if ($tmp && is_file($tmp)) @unlink($tmp);
     }
 
     return new Response($png, 200, [

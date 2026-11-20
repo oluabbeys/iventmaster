@@ -80,6 +80,17 @@ class EventCardSettingsForm extends FormBase {
       ],
       '#default_value' => $s['name_source'],
     ];
+    $w['split_mode'] = [
+      '#type'    => 'radios',
+      '#title'   => $this->t('How to split'),
+      '#options' => [
+        'surname'  => $this->t('Last word on line 2 — "Dr Dasfwang" / "Data"'),
+        'balanced' => $this->t('Balanced — break at the space nearest the middle'),
+      ],
+      '#default_value' => $s['split_mode'],
+      '#description'   => $this->t('Either way, typing a "|" in the name (e.g. "Prof Ngozi | Okonjo-Iweala") splits exactly there.'),
+      '#states' => ['visible' => [':input[name="name_source"]' => ['value' => 'split']]],
+    ];
     $w['line1_field'] = $this->fieldElement($this->t('Line 1 field (or the field to split)'), $s['line1_field'] ?: 'name', $fieldOptions, TRUE);
     $w['line2_field'] = $this->fieldElement($this->t('Line 2 field'), $s['line2_field'], $fieldOptions, FALSE)
       + ['#states' => ['visible' => [':input[name="name_source"]' => ['value' => 'fields']]]];
@@ -104,25 +115,64 @@ class EventCardSettingsForm extends FormBase {
     $w['look']['offsets']['offset_x'] = ['#type' => 'number', '#title' => $this->t('X offset (px)'), '#default_value' => $s['offset_x'], '#description' => $this->t('+ moves right')];
     $w['look']['offsets']['offset_y'] = ['#type' => 'number', '#title' => $this->t('Y offset (px)'), '#default_value' => $s['offset_y'], '#description' => $this->t('+ moves down')];
 
-    $w['look']['sizes'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap']];
-    $w['look']['sizes']['font_size']     = ['#type' => 'number', '#title' => $this->t('Font size (pt)'), '#default_value' => $s['font_size'], '#min' => 6, '#max' => 400];
-    $w['look']['sizes']['min_font_size'] = ['#type' => 'number', '#title' => $this->t('Smallest size for long names (pt)'), '#default_value' => $s['min_font_size'], '#min' => 6, '#max' => 400];
-    $w['look']['sizes']['max_width_pct'] = ['#type' => 'number', '#title' => $this->t('Max line width (% of card)'), '#default_value' => $s['max_width_pct'], '#min' => 10, '#max' => 100];
-    $w['look']['sizes']['line_spacing']  = ['#type' => 'number', '#title' => $this->t('Line spacing'), '#default_value' => $s['line_spacing'], '#min' => 0.8, '#max' => 3, '#step' => 0.05];
+    $w['look']['common'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end']];
+    $w['look']['common']['max_width_pct'] = ['#type' => 'number', '#title' => $this->t('Max line width (% of card)'), '#default_value' => $s['max_width_pct'], '#min' => 10, '#max' => 100];
+    $w['look']['common']['line_spacing']  = ['#type' => 'number', '#title' => $this->t('Line spacing'), '#default_value' => $s['line_spacing'], '#min' => 0.8, '#max' => 3, '#step' => 0.05];
+    $w['look']['common']['shadow']        = ['#type' => 'checkbox', '#title' => $this->t('Soft shadow'), '#default_value' => $s['shadow']];
 
-    $w['look']['colour'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end']];
-    $w['look']['colour']['color']  = ['#type' => 'color', '#title' => $this->t('Text colour'), '#default_value' => $s['color']];
-    $w['look']['colour']['shadow'] = ['#type' => 'checkbox', '#title' => $this->t('Soft shadow'), '#default_value' => $s['shadow']];
+    $resolved1 = $this->qrService->resolveAccessFontPath($s, $config);
+    $resolved2 = $this->qrService->resolveAccessLine2FontPath($s);
+    $none      = $this->t('GD built-in font (no TTF found)');
 
-    $resolved = $this->qrService->resolveAccessFontPath($s, $config);
-    $w['look']['font_path'] = [
-      '#type'          => 'textfield',
-      '#title'         => $this->t('TTF font file (absolute path, optional)'),
+    $w['line1'] = ['#type' => 'fieldset', '#title' => $this->t('Line 1 (e.g. "Dr Dasfwang")')];
+    $w['line1']['row'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end']];
+    $w['line1']['row']['font_size']     = ['#type' => 'number', '#title' => $this->t('Font size (pt)'), '#default_value' => $s['font_size'], '#min' => 6, '#max' => 400];
+    $w['line1']['row']['min_font_size'] = ['#type' => 'number', '#title' => $this->t('Smallest size for long names (pt)'), '#default_value' => $s['min_font_size'], '#min' => 6, '#max' => 400];
+    $w['line1']['row']['color']         = ['#type' => 'color', '#title' => $this->t('Colour'), '#default_value' => $s['color']];
+    $w['line1']['font_path'] = [
+      '#type' => 'textfield', '#title' => $this->t('TTF font file (absolute path, optional)'),
       '#default_value' => $s['font_path'],
-      '#description'   => $this->t('Leave blank to use the global name font, or the DejaVu Sans Bold font bundled with this module. Currently using: @f', ['@f' => $resolved ?: $this->t('GD built-in font (no TTF found)')]),
+      '#description'   => $this->t('Blank = bundled Source Sans 3 Bold. Using: @f', ['@f' => $resolved1 ?: $none]),
+    ];
+
+    $w['line2'] = ['#type' => 'fieldset', '#title' => $this->t('Line 2 (e.g. "Data")')];
+    $w['line2']['row'] = ['#type' => 'container', '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end']];
+    $w['line2']['row']['line2_size_pct'] = ['#type' => 'number', '#title' => $this->t('Size (% of line 1)'), '#default_value' => $s['line2_size_pct'], '#min' => 20, '#max' => 200];
+    $w['line2']['row']['line2_same_color'] = ['#type' => 'checkbox', '#title' => $this->t('Same colour as line 1'), '#default_value' => trim((string) $s['line2_color']) === ''];
+    $w['line2']['row']['line2_color'] = [
+      '#type' => 'color', '#title' => $this->t('Colour'),
+      '#default_value' => $s['line2_color'] ?: $s['color'],
+      '#states' => ['visible' => [':input[name="line2_same_color"]' => ['checked' => FALSE]]],
+    ];
+    $w['line2']['line2_font_path'] = [
+      '#type' => 'textfield', '#title' => $this->t('TTF font file (absolute path, optional)'),
+      '#default_value' => $s['line2_font_path'],
+      '#description'   => $this->t('Blank = bundled Source Sans 3 Regular. Using: @f', ['@f' => $resolved2 ?: $none]),
     ];
 
     unset($w);
+
+    // ── QR placement (optional override) ───────────────────────────────────
+    $form['qr'] = ['#type' => 'details', '#title' => $this->t('QR Code Placement (this event only)'), '#open' => (bool) $s['qr_override']];
+    $form['qr']['qr_override'] = [
+      '#type'          => 'checkbox',
+      '#title'         => $this->t('Use a different QR position/size for this event'),
+      '#default_value' => $s['qr_override'],
+      '#description'   => $this->t('Off = the global QR settings (@pos, @size px). Other events are never affected.', [
+        '@pos'  => $config->get('qr_position') ?: 'bottom-right',
+        '@size' => (int) ($config->get('qr_size') ?: 150),
+      ]),
+    ];
+    $form['qr']['wrap'] = ['#type' => 'container', '#states' => ['visible' => [':input[name="qr_override"]' => ['checked' => TRUE]]], '#attributes' => ['style' => 'display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end']];
+    $form['qr']['wrap']['qr_position'] = [
+      '#type' => 'select', '#title' => $this->t('Anchor'),
+      '#options' => ['top-left' => 'Top Left', 'top-right' => 'Top Right', 'bottom-left' => 'Bottom Left', 'bottom-right' => 'Bottom Right', 'center' => 'Center'],
+      '#default_value' => $s['qr_position'],
+    ];
+    $form['qr']['wrap']['qr_size']     = ['#type' => 'number', '#title' => $this->t('Size (px)'), '#default_value' => $s['qr_size'], '#min' => 50, '#max' => 2000];
+    $form['qr']['wrap']['qr_margin']   = ['#type' => 'number', '#title' => $this->t('Margin (px)'), '#default_value' => $s['qr_margin'], '#min' => 0];
+    $form['qr']['wrap']['qr_offset_x'] = ['#type' => 'number', '#title' => $this->t('X offset (px)'), '#default_value' => $s['qr_offset_x']];
+    $form['qr']['wrap']['qr_offset_y'] = ['#type' => 'number', '#title' => $this->t('Y offset (px)'), '#default_value' => $s['qr_offset_y']];
 
     // ── Preview ─────────────────────────────────────────────────────────────
     $previewUrl = Url::fromRoute('invitation_qr.access_card_preview', ['node' => $node->id()], ['query' => ['t' => time()]])->toString();
@@ -139,9 +189,11 @@ class EventCardSettingsForm extends FormBase {
   }
 
   public function validateForm(array &$form, FormStateInterface $form_state): void {
-    $font = trim((string) $form_state->getValue('font_path'));
-    if ($font !== '' && !is_file($font)) {
-      $form_state->setErrorByName('font_path', $this->t('Font file not found: @f', ['@f' => $font]));
+    foreach (['font_path', 'line2_font_path'] as $key) {
+      $font = trim((string) $form_state->getValue($key));
+      if ($font !== '' && !is_file($font)) {
+        $form_state->setErrorByName($key, $this->t('Font file not found: @f', ['@f' => $font]));
+      }
     }
     if ((int) $form_state->getValue('min_font_size') > (int) $form_state->getValue('font_size')) {
       $form_state->setErrorByName('min_font_size', $this->t('The smallest size cannot be bigger than the font size.'));
@@ -161,6 +213,7 @@ class EventCardSettingsForm extends FormBase {
       'download_only'       => (bool) $v['download_only'],
       'access_name_enabled' => (bool) $v['access_name_enabled'],
       'name_source'         => $v['name_source'] === 'fields' ? 'fields' : 'split',
+      'split_mode'          => $v['split_mode'] === 'balanced' ? 'balanced' : 'surname',
       'line1_field'         => trim((string) $v['line1_field']),
       'line2_field'         => trim((string) $v['line2_field']),
       'uppercase'           => (bool) $v['uppercase'],
@@ -168,6 +221,15 @@ class EventCardSettingsForm extends FormBase {
       'font_size'           => (int) $v['font_size'],
       'min_font_size'       => (int) $v['min_font_size'],
       'line_spacing'        => (float) $v['line_spacing'],
+      'line2_font_path'     => trim((string) $v['line2_font_path']),
+      'line2_size_pct'      => (int) $v['line2_size_pct'],
+      'line2_color'         => !empty($v['line2_same_color']) ? '' : (string) $v['line2_color'],
+      'qr_override'         => (bool) $v['qr_override'],
+      'qr_position'         => (string) $v['qr_position'],
+      'qr_size'             => (int) $v['qr_size'],
+      'qr_margin'           => (int) $v['qr_margin'],
+      'qr_offset_x'         => (int) $v['qr_offset_x'],
+      'qr_offset_y'         => (int) $v['qr_offset_y'],
       'max_width_pct'       => (int) $v['max_width_pct'],
       'color'               => (string) $v['color'],
       'shadow'              => (bool) $v['shadow'],
