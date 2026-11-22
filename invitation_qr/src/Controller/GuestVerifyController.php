@@ -73,13 +73,18 @@ class GuestVerifyController extends ControllerBase {
         // Load event details from parent node.
         $node = $this->qrService->findParentNode($submission);
         if ($node) {
+          $zoomField = \Drupal::config('invitation_qr.settings')->get('zoom_link_field') ?: 'field_zoom_link';
           $rawDate = $this->qrService->getNodeFieldValue($node, 'field_event_date');
           $event = [
             'title'     => $node->label(),
             'date'      => $this->qrService->formatEventDate($rawDate),
             'venue'     => $this->qrService->getNodeFieldValue($node, 'field_event_venue'),
             'time'      => $this->qrService->getNodeFieldValue($node, 'field_event_time'),
-            'zoom_link' => $this->qrService->getNodeFieldValue($node, 'field_zoom_link'),
+            'zoom_link' => $this->qrService->getNodeFieldValue($node, $zoomField),
+            // The link's own label from the node's Link field (e.g.
+            // "Download the brochure"); falls back to "Join Online" when the
+            // editor left the label empty.
+            'zoom_title' => $this->linkFieldTitle($node, $zoomField),
             'type'      => $this->qrService->getNodeFieldValue($node, 'field_event_type'),
           ];
         }
@@ -98,6 +103,17 @@ class GuestVerifyController extends ControllerBase {
       '#cache'        => ['max-age' => 0],
       '#attached'     => ['library' => ['invitation_qr/invitation-qr.verify']],
     ];
+  }
+
+  /**
+   * Label (title) of the first item in a Link field, or '' if none.
+   */
+  protected function linkFieldTitle(object $node, string $fieldName): string {
+    if (!$node->hasField($fieldName) || $node->get($fieldName)->isEmpty()) {
+      return '';
+    }
+    $item = $node->get($fieldName)->first();
+    return trim((string) ($item->title ?? ''));
   }
 
   protected function handleCheckin(string $token): JsonResponse {

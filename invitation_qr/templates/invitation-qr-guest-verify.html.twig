@@ -2,7 +2,7 @@
  * Variables:
  *  - valid, guest {name, email, phone, token, sid, pii_masked}
  *  - checked_in, checkin_time, can_checkin, token
- *  - event {title, date, venue, time, zoom_link, type}
+ *  - event {title, date, venue, time, zoom_link, zoom_title, type}
 #}
 <div class="inv-verify-wrap">
   {% if valid and guest %}
@@ -46,11 +46,12 @@
             {% if event.time %}
               <dt>⏰ {{ 'Time'|t }}</dt><dd>{{ event.time }}</dd>
             {% endif %}
-            {% if event.zoom_link %}
-              <dt>🔗 {{ 'Zoom'|t }}</dt>
-              <dd><a href="{{ event.zoom_link }}" target="_blank" rel="noopener">{{ 'Join Online'|t }}</a></dd>
-            {% endif %}
           </dl>
+          {% if event.zoom_link %}
+            <p class="inv-verify__event-link">
+              <a href="{{ event.zoom_link }}" target="_blank" rel="noopener">{{ event.zoom_title ?: 'Join Online'|t }}</a>
+            </p>
+          {% endif %}
         </div>
       {% endif %}
 
